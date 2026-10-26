@@ -1,0 +1,12 @@
+# Gradle & Android build caches
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+ui_dump*.xml
