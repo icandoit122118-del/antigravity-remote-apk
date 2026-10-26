@@ -139,10 +139,10 @@ object PcBridgeClient {
         )
         val isFromBridge = liveReply != null
         val authorDisplay = when {
-            isLocalAi && isFromBridge -> "$engineLabel · PC 로컬"
-            isLocalAi -> "$engineLabel (온디바이스)"
-            isFromBridge -> "Antigravity PC Bridge"
-            else -> "Antigravity Agent"
+            isLocalAi && isFromBridge -> "$engineLabel"
+            isLocalAi -> "$engineLabel"
+            isFromBridge -> "안그래비티 도우미 (PC 연결됨)"
+            else -> "안그래비티 도우미"
         }
 
         val plannedThought = buildThoughtForPrompt(userPrompt, isFromBridge, host, port, engineLabel, modelId, isLocalAi)
@@ -377,32 +377,27 @@ object PcBridgeClient {
         }
         if (isLocalAi) {
             return Triple(
-                "[$engineLabel (`$modelId`)] 로컬 AI 엔진으로 요청(`$prompt`)을 처리했습니다. 외부 클라우드 전송 없이 로컬 모델 파이프라인에서 응답을 생성하며, 상단 AI 엔진 바에서 언제든 다른 로컬 모델(`Qwen 2.5 Coder`, `DeepSeek R1`, `Llama 3.1`)이나 기본 Antigravity로 전환할 수 있습니다.",
-                "json",
-                "{\"provider\":\"local-ai\",\"model\":\"$modelId\",\"offlineReady\":true}"
+                "[$engineLabel] 요청하신 내용(\"$prompt\")을 정리했습니다.\n\n내 컴퓨터의 로컬 AI 모델을 사용해 외부 전송 없이 안전하게 답변을 작성했습니다. 다른 AI로 바꾸고 싶다면 오른쪽 위 [설정] 버튼을 눌러보세요.",
+                null,
+                null
             )
         }
         val lower = prompt.lowercase()
         return when {
-            lower.contains("apk") || lower.contains("빌드") || lower.contains("용량") -> Triple(
-                "APK 서명 및 빌드 상태를 점검했습니다. `minSdk 24`(Android 7.0)부터 최신 `targetSdk 36` 기기까지 모두 호환되며, 코끼리(Elephant) 스타일의 차분한 다크 세이지 테마와 내장 스트리밍 시뮬레이터가 함께 패키징되어 단독 설치 즉시 동작합니다.",
-                "kotlin",
-                """
-                // APK 빌드 구성 요약 (app/build.gradle.kts)
-                applicationId = "com.antigravity.remote"
-                minSdk = 24
-                targetSdk = 36
-                """.trimIndent()
+            lower.contains("할 일") || lower.contains("정리") -> Triple(
+                "오늘 해야 할 일을 한눈에 보기 쉽게 3가지로 정리해 드릴게요.\n\n1. **가장 중요한 일 1가지 먼저 끝내기**: 오전이나 집중이 잘 되는 시간에 핵심 작업을 배치하세요.\n2. **가벼운 연락 및 회신 모아서 처리하기**: 메시지 확인은 정해진 시간에만 확인하면 피로가 줄어듭니다.\n3. **마무리 점검**: 잠들기 전 내일 일정을 한 줄로 적어두면 훨씬 편안한 밤을 보낼 수 있습니다.",
+                null,
+                null
             )
-            lower.contains("색상") || lower.contains("대비") || lower.contains("wcag") -> Triple(
-                "코끼리(Elephant) 레퍼런스의 밤하늘 배경(`#11161B`)과 따뜻한 아이보리 본문(`#F2EFE9`)은 `13.8:1` 명도 대비를 유지해 어두운 실내에서도 눈부심 없이 또렷하게 읽힙니다. 스트리밍 활성 상태는 세이지 민트(`#68C5B2`)와 램프 골드(`#E8B96D`) 두 가지 포인트로만 절제해 표현합니다.",
+            lower.contains("요약") || lower.contains("하루") -> Triple(
+                "오늘 하루도 수고 많으셨습니다. 복잡한 생각은 잠시 내려놓고, 내일 이어서 할 핵심 메모 한 줄만 남긴 뒤 편안하게 쉬어가세요.",
                 null,
                 null
             )
             else -> Triple(
-                "요청하신 작업(`$prompt`)을 처리했습니다. 상단 인스펙터 칩에서 `최악 데이터 (Break-UI)`, `로딩 상태`, `빈 화면`, `연결 오류` 등 4대 데이터 상태를 즉시 전환해 볼 수 있으며, 하단 플로팅 미니바에서 언제든 실시간 스트리밍을 제어할 수 있습니다.",
-                "bash",
-                "node pc-bridge-server.mjs --port 8765"
+                "말씀하신 내용(\"$prompt\")을 확인했습니다.\n\n더 자세한 설명이나 글 다듬기, 혹은 내 PC 확인이 필요하면 언제든 아래 입력창에 편하게 적어주세요.",
+                null,
+                null
             )
         }
     }

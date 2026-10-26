@@ -360,4 +360,42 @@ object AntigravityIcons {
             }
         }.build()
     }
+
+    val SettingsSliders: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "SettingsSliders",
+            defaultWidth = 20.dp,
+            defaultHeight = 20.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(4f, 7f)
+                lineTo(10f, 7f)
+                moveTo(14f, 7f)
+                lineTo(20f, 7f)
+                moveTo(12f, 5f)
+                lineTo(12f, 9f)
+
+                moveTo(4f, 12f)
+                lineTo(14f, 12f)
+                moveTo(18f, 12f)
+                lineTo(20f, 12f)
+                moveTo(16f, 10f)
+                lineTo(16f, 14f)
+
+                moveTo(4f, 17f)
+                lineTo(6f, 17f)
+                moveTo(10f, 17f)
+                lineTo(20f, 17f)
+                moveTo(8f, 15f)
+                lineTo(8f, 19f)
+            }
+        }.build()
+    }
 }
