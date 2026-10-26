@@ -1,5 +1,6 @@
 package com.antigravity.remote
 
+import com.antigravity.remote.model.AiEngineCatalog
 import com.antigravity.remote.model.AntigravityFixtures
 import com.antigravity.remote.model.InspectorViewMode
 import com.antigravity.remote.ui.theme.AntigravityPalette
@@ -32,6 +33,14 @@ class AntigravityRemoteUnitTest {
         assertEquals("A", userMsg.authorName) // 1-char name edge case
         val agentMsg = session.messages.last()
         assertEquals(98420, agentMsg.tokenCount)
+    }
+
+    @Test
+    fun aiEngineCatalog_includesAntigravityAndSelectableLocalAiModels() {
+        val options = AiEngineCatalog.options
+        assertTrue("Must provide multiple AI engines", options.size >= 4)
+        assertTrue("Must include Local AI options", options.count { it.isLocal } >= 3)
+        assertEquals("qwen2.5-coder:7b", options.first { it.isLocal }.modelId)
     }
 
     @Test

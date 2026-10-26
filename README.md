@@ -14,6 +14,9 @@ WWIT **코끼리(Elephant)** 앱의 고요한 밤 감성과 Hallmark **`Ribbon (
 - **실시간 에이전트 스트리밍 & 플로팅 미니바**:
   - 접고 펼칠 수 있는 **생각 과정(`ThoughtProcessAccordion`)** 및 **실행됨 명령/작업(`ToolExecutionAccordion`)** 카드.
   - 코끼리 앱의 오디오 미니 플레이어에서 영감을 받은 **하단 플로팅 라이브 스트림 바**(`tok/s` 속도, 경과 시간 `tnum` 고정폭 숫자, 즉시 중지/스트림 제어).
+- **AI 엔진 & 로컬 AI 선택 기능 (`AiEngineSelectorStrip`)**:
+  - 상단 AI 엔진 선택 스트립에서 `Antigravity 기본`, `로컬 AI · Qwen 2.5 Coder`(`qwen2.5-coder:7b`), `로컬 AI · DeepSeek R1`(`deepseek-r1:8b`), `로컬 AI · Llama 3.1`(`llama-3.1-8b-instruct`)을 1탭으로 즉시 전환 가능.
+  - PC 브릿지(`pc-bridge-server.mjs`)가 로컬 Ollama(`127.0.0.1:11434`) 및 LM Studio(`127.0.0.1:1234`)로 자동 라우팅하며, 오프라인 시에도 온디바이스 로컬 AI 추론 시뮬레이터로 무중단 응답.
 - **PC 브릿지 서버 연동 & 무중단 오프라인 시뮬레이터**:
   - 동일 Wi-Fi / LAN에서 `pc-bridge-server.mjs` 실행 시 실시간 연동(`http://<PC_IP>:8765`).
   - PC 서버가 꺼져 있을 때는 앱 내장 코루틴 스트리밍 엔진으로 자동 폴백되어 단독 실행 가능.

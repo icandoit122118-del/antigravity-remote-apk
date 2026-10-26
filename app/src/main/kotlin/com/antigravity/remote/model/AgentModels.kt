@@ -15,6 +15,57 @@ enum class BridgeConnectionState(val badgeLabel: String) {
     DISCONNECTED_ERROR("브릿지 응답 없음")
 }
 
+data class AiEngineOption(
+    val id: String,
+    val label: String,
+    val modelId: String,
+    val providerTag: String,
+    val description: String,
+    val isLocal: Boolean,
+    val defaultPort: Int = 11434
+)
+
+object AiEngineCatalog {
+    val options: List<AiEngineOption> = listOf(
+        AiEngineOption(
+            id = "engine-antigravity",
+            label = "Antigravity 기본",
+            modelId = "antigravity-agent",
+            providerTag = "Antigravity Cloud/Host",
+            description = "기본 안그래비티 코딩 에이전트 및 도구 실행 파이프라인",
+            isLocal = false,
+            defaultPort = 8765
+        ),
+        AiEngineOption(
+            id = "engine-local-qwen",
+            label = "로컬 AI · Qwen 2.5 Coder",
+            modelId = "qwen2.5-coder:7b",
+            providerTag = "Local Ollama (11434)",
+            description = "PC 로컬 GPU/NPU 기반 오프라인 코드 생성 및 리팩터링 특화 모델",
+            isLocal = true,
+            defaultPort = 11434
+        ),
+        AiEngineOption(
+            id = "engine-local-deepseek",
+            label = "로컬 AI · DeepSeek R1",
+            modelId = "deepseek-r1:8b",
+            providerTag = "Local Reasoning (11434)",
+            description = "로컬 심층 추론(Chain-of-Thought) 및 아키텍처 점검 모델",
+            isLocal = true,
+            defaultPort = 11434
+        ),
+        AiEngineOption(
+            id = "engine-local-llama",
+            label = "로컬 AI · Llama 3.1",
+            modelId = "llama-3.1-8b-instruct",
+            providerTag = "Local LM Studio (1234)",
+            description = "OpenAI 호환 로컬 서버(LM Studio / llama.cpp) 한국어 대화 모델",
+            isLocal = true,
+            defaultPort = 1234
+        )
+    )
+}
+
 enum class MessageRole {
     USER,
     AGENT

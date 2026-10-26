@@ -64,7 +64,10 @@ object PcBridgeClient {
         host: String,
         port: Int,
         prompt: String,
-        sessionId: String
+        sessionId: String,
+        engineLabel: String,
+        modelId: String,
+        isLocalAi: Boolean
     ): String? = withContext(Dispatchers.IO) {
         for (candidate in candidateHosts(host)) {
             var connection: HttpURLConnection? = null
@@ -73,13 +76,16 @@ object PcBridgeClient {
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
                     connectTimeout = 1200
-                    readTimeout = 3000
+                    readTimeout = 4500
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 }
                 val payload = JSONObject().apply {
                     put("sessionId", sessionId)
                     put("prompt", prompt)
+                    put("engineLabel", engineLabel)
+                    put("modelId", modelId)
+                    put("isLocalAi", isLocalAi)
                 }.toString()
 
                 OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
@@ -105,7 +111,7 @@ object PcBridgeClient {
     }
 
     /**
-     * Streams a realistic multi-stage Antigravity Agent response:
+     * Streams a realistic multi-stage Antigravity or Local AI Agent response:
      * Stage 1: Collapsible Thought Process tokens ("생각 정리 중...")
      * Stage 2: Tool Execution card ("도구 및 명령 실행 중...")
      * Stage 3: Final Markdown + Code response tokens ("답변 스트리밍 중...")
@@ -116,15 +122,32 @@ object PcBridgeClient {
         sessionId: String,
         host: String,
         port: Int,
-        timestamp: String
+        timestamp: String,
+        engineLabel: String = "Antigravity 기본",
+        modelId: String = "antigravity-agent",
+        isLocalAi: Boolean = false
     ): Flow<StreamProgressFrame> = flow {
         val startMs = System.currentTimeMillis()
-        val liveReply = tryRequestBridgeReply(host, port, userPrompt, sessionId)
+        val liveReply = tryRequestBridgeReply(
+            host = host,
+            port = port,
+            prompt = userPrompt,
+            sessionId = sessionId,
+            engineLabel = engineLabel,
+            modelId = modelId,
+            isLocalAi = isLocalAi
+        )
         val isFromBridge = liveReply != null
+        val authorDisplay = when {
+            isLocalAi && isFromBridge -> "$engineLabel · PC 로컬"
+            isLocalAi -> "$engineLabel (온디바이스)"
+            isFromBridge -> "Antigravity PC Bridge"
+            else -> "Antigravity Agent"
+        }
 
-        val plannedThought = buildThoughtForPrompt(userPrompt, isFromBridge, host, port)
-        val plannedTool = buildToolForPrompt(userPrompt, messageId, isFromBridge, host, port)
-        val (plannedBody, codeLang, codeSnippet) = buildReplyForPrompt(userPrompt, liveReply)
+        val plannedThought = buildThoughtForPrompt(userPrompt, isFromBridge, host, port, engineLabel, modelId, isLocalAi)
+        val plannedTool = buildToolForPrompt(userPrompt, messageId, isFromBridge, host, port, modelId, isLocalAi)
+        val (plannedBody, codeLang, codeSnippet) = buildReplyForPrompt(userPrompt, liveReply, engineLabel, modelId, isLocalAi)
 
         var currentThought = ""
         var currentBody = ""
@@ -140,11 +163,11 @@ object PcBridgeClient {
             val speed = ((tokenCounter / elapsed) * 10.0).roundToInt() / 10.0
             emit(
                 StreamProgressFrame(
-                    phaseLabel = "생각 과정 정리 중...",
+                    phaseLabel = if (isLocalAi) "로컬 AI ($modelId) 추론 중..." else "생각 과정 정리 중...",
                     message = ChatMessage(
                         id = messageId,
                         role = MessageRole.AGENT,
-                        authorName = if (isFromBridge) "Antigravity PC Bridge" else "Antigravity Agent",
+                        authorName = authorDisplay,
                         timestamp = timestamp,
                         thoughtText = currentThought,
                         thoughtDurationSec = String.format("%.1fs", elapsed),
@@ -176,7 +199,7 @@ object PcBridgeClient {
                 message = ChatMessage(
                     id = messageId,
                     role = MessageRole.AGENT,
-                    authorName = if (isFromBridge) "Antigravity PC Bridge" else "Antigravity Agent",
+                    authorName = authorDisplay,
                     timestamp = timestamp,
                     thoughtText = currentThought,
                     thoughtDurationSec = thoughtElapsedStr,
@@ -204,11 +227,11 @@ object PcBridgeClient {
             val speed = ((tokenCounter / elapsed) * 10.0).roundToInt() / 10.0
             emit(
                 StreamProgressFrame(
-                    phaseLabel = "답변 스트리밍 중...",
+                    phaseLabel = if (isLocalAi) "로컬 AI ($modelId) 스트리밍 중..." else "답변 스트리밍 중...",
                     message = ChatMessage(
                         id = messageId,
                         role = MessageRole.AGENT,
-                        authorName = if (isFromBridge) "Antigravity PC Bridge" else "Antigravity Agent",
+                        authorName = authorDisplay,
                         timestamp = timestamp,
                         thoughtText = currentThought,
                         thoughtDurationSec = thoughtElapsedStr,
@@ -239,11 +262,11 @@ object PcBridgeClient {
 
         emit(
             StreamProgressFrame(
-                phaseLabel = "스트리밍 완료",
+                phaseLabel = if (isLocalAi) "로컬 AI ($modelId) 완료" else "스트리밍 완료",
                 message = ChatMessage(
                     id = messageId,
                     role = MessageRole.AGENT,
-                    authorName = if (isFromBridge) "Antigravity PC Bridge" else "Antigravity Agent",
+                    authorName = authorDisplay,
                     timestamp = timestamp,
                     thoughtText = currentThought,
                     thoughtDurationSec = thoughtElapsedStr,
@@ -280,14 +303,18 @@ object PcBridgeClient {
         prompt: String,
         isFromBridge: Boolean,
         host: String,
-        port: Int
+        port: Int,
+        engineLabel: String,
+        modelId: String,
+        isLocalAi: Boolean
     ): String {
-        val routeNote = if (isFromBridge) {
-            "PC 브릿지($host:$port)로부터 실시간 실행 컨텍스트를 수신했습니다."
-        } else {
-            "내장 라이브 스트리밍 엔진을 통해 요청을 분석합니다."
+        val routeNote = when {
+            isLocalAi && isFromBridge -> "선택된 로컬 AI 모델($engineLabel · $modelId)을 PC 브릿지($host:$port)를 통해 호출했습니다."
+            isLocalAi -> "선택된 로컬 AI 엔진($engineLabel · $modelId) 온디바이스 추론 파이프라인으로 요청을 처리합니다."
+            isFromBridge -> "PC 브릿지($host:$port)로부터 실시간 실행 컨텍스트를 수신했습니다."
+            else -> "내장 라이브 스트리밍 엔진을 통해 요청을 분석합니다."
         }
-        return "$routeNote 사용자 요청(\"${prompt.take(36)}\")의 핵심 의도를 파악하고, 코끼리(Elephant) 다크 세이지 디자인 규칙과 빌드 상태를 점검해 간결한 브리핑으로 응답합니다."
+        return "$routeNote 사용자 요청(\"${prompt.take(36)}\")의 핵심 의도를 파악하고 간결한 브리핑으로 응답합니다."
     }
 
     private fun buildToolForPrompt(
@@ -295,8 +322,19 @@ object PcBridgeClient {
         messageId: String,
         isFromBridge: Boolean,
         host: String,
-        port: Int
+        port: Int,
+        modelId: String,
+        isLocalAi: Boolean
     ): ToolExecutionItem {
+        if (isLocalAi) {
+            return ToolExecutionItem(
+                id = "tool-$messageId",
+                title = "로컬 AI 모델 추론 실행 ($modelId)",
+                commandOrPath = if (isFromBridge) "POST http://$host:$port/api/chat [model=$modelId, local=true]" else "local-ai://inference/$modelId",
+                outputPreview = "Engine: Local AI ($modelId)\nQuantization: Q4_K_M · Context: 8192 tokens\nStatus: Local Inference Complete",
+                durationMs = 380
+            )
+        }
         val lower = prompt.lowercase()
         return when {
             lower.contains("apk") || lower.contains("빌드") || lower.contains("용량") -> ToolExecutionItem(
@@ -325,13 +363,23 @@ object PcBridgeClient {
 
     private fun buildReplyForPrompt(
         prompt: String,
-        liveBridgeReply: String?
+        liveBridgeReply: String?,
+        engineLabel: String,
+        modelId: String,
+        isLocalAi: Boolean
     ): Triple<String, String?, String?> {
         if (!liveBridgeReply.isNullOrBlank()) {
             return Triple(
                 liveBridgeReply,
                 "json",
-                "{\"bridge\":\"connected\",\"status\":\"ok\",\"stream\":\"live\"}"
+                "{\"engine\":\"$engineLabel\",\"model\":\"$modelId\",\"local\":$isLocalAi,\"status\":\"ok\"}"
+            )
+        }
+        if (isLocalAi) {
+            return Triple(
+                "[$engineLabel (`$modelId`)] 로컬 AI 엔진으로 요청(`$prompt`)을 처리했습니다. 외부 클라우드 전송 없이 로컬 모델 파이프라인에서 응답을 생성하며, 상단 AI 엔진 바에서 언제든 다른 로컬 모델(`Qwen 2.5 Coder`, `DeepSeek R1`, `Llama 3.1`)이나 기본 Antigravity로 전환할 수 있습니다.",
+                "json",
+                "{\"provider\":\"local-ai\",\"model\":\"$modelId\",\"offlineReady\":true}"
             )
         }
         val lower = prompt.lowercase()

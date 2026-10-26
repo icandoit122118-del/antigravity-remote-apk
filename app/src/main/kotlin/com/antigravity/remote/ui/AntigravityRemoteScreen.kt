@@ -84,6 +84,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.antigravity.remote.model.AiEngineCatalog
+import com.antigravity.remote.model.AiEngineOption
 import com.antigravity.remote.model.AntigravityFixtures
 import com.antigravity.remote.model.BridgeConnectionState
 import com.antigravity.remote.model.ChatMessage
@@ -120,6 +122,21 @@ fun AntigravityRemoteScreen() {
     var bridgePortText by rememberSaveable { mutableStateOf("8765") }
     var connectionState by remember { mutableStateOf(BridgeConnectionState.SIMULATION_ACTIVE) }
     var showBridgeDialog by rememberSaveable { mutableStateOf(false) }
+
+    // AI Engine & Local AI Selection state
+    val engineOptions = remember { AiEngineCatalog.options }
+    var selectedEngineId by rememberSaveable { mutableStateOf(engineOptions.first().id) }
+    var customLocalModelId by rememberSaveable { mutableStateOf("qwen2.5-coder:7b") }
+    val activeEngine by remember(selectedEngineId) {
+        derivedStateOf {
+            engineOptions.find { it.id == selectedEngineId } ?: engineOptions.first()
+        }
+    }
+    val effectiveModelId = if (activeEngine.isLocal && customLocalModelId.isNotBlank() && selectedEngineId == "engine-local-qwen") {
+        customLocalModelId
+    } else {
+        activeEngine.modelId
+    }
 
     // Mutable session states for Normal and Worst-case modes
     val normalSessions = remember {
@@ -212,9 +229,13 @@ fun AntigravityRemoteScreen() {
         val placeholderAgent = ChatMessage(
             id = agentMsgId,
             role = MessageRole.AGENT,
-            authorName = "Antigravity Agent",
+            authorName = if (activeEngine.isLocal) "${activeEngine.label} ($effectiveModelId)" else "Antigravity Agent",
             timestamp = timeFmt,
-            thoughtText = "요청 의도를 분석하고 있습니다...",
+            thoughtText = if (activeEngine.isLocal) {
+                "로컬 AI 엔진($effectiveModelId)에서 요청 의도를 분석하고 있습니다..."
+            } else {
+                "요청 의도를 분석하고 있습니다..."
+            },
             bodyText = "...",
             isStreaming = true
         )
@@ -237,7 +258,10 @@ fun AntigravityRemoteScreen() {
                 sessionId = session.id,
                 host = bridgeHost,
                 port = port,
-                timestamp = timeFmt
+                timestamp = timeFmt,
+                engineLabel = activeEngine.label,
+                modelId = effectiveModelId,
+                isLocalAi = activeEngine.isLocal
             ).collect { frame ->
                 streamPhaseLabel = frame.phaseLabel
                 liveTokensPerSec = frame.tokensPerSec
@@ -310,6 +334,21 @@ fun AntigravityRemoteScreen() {
                 reducedMotion = reducedMotion,
                 onSelectMode = { selected ->
                     viewMode = selected
+                }
+            )
+
+            // 2.5 AI Engine & Local AI Selector Strip (Antigravity / Local Ollama / DeepSeek / Llama)
+            AiEngineSelectorStrip(
+                engines = engineOptions,
+                selectedEngineId = selectedEngineId,
+                reducedMotion = reducedMotion,
+                onSelectEngine = { engine ->
+                    selectedEngineId = engine.id
+                    streamPhaseLabel = if (engine.isLocal) {
+                        "로컬 AI 대기 중 · ${engine.modelId}"
+                    } else {
+                        "대기 중 · 코끼리 나이트 세이지 모드"
+                    }
                 }
             )
 
@@ -465,11 +504,13 @@ fun AntigravityRemoteScreen() {
             PcBridgeSettingsDialog(
                 initialHost = bridgeHost,
                 initialPort = bridgePortText,
+                initialLocalModel = customLocalModelId,
                 connectionState = connectionState,
                 onDismiss = { showBridgeDialog = false },
-                onSaveAndTest = { newHost, newPort ->
-                    bridgeHost = newHost.ifBlank { "10.0.2.2" }
+                onSaveAndTest = { newHost, newPort, newLocalModel ->
+                    bridgeHost = newHost.ifBlank { "127.0.0.1" }
                     bridgePortText = newPort.ifBlank { "8765" }
+                    customLocalModelId = newLocalModel.ifBlank { "qwen2.5-coder:7b" }
                     coroutineScope.launch {
                         connectionState = BridgeConnectionState.CONNECTING
                         val ok = PcBridgeClient.checkBridgeHealth(
@@ -485,6 +526,71 @@ fun AntigravityRemoteScreen() {
                     }
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun AiEngineSelectorStrip(
+    engines: List<AiEngineOption>,
+    selectedEngineId: String,
+    reducedMotion: Boolean,
+    onSelectEngine: (AiEngineOption) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        engines.forEach { engine ->
+            val selected = engine.id == selectedEngineId
+            val interactionSource = remember { MutableInteractionSource() }
+            val activeAccent = if (engine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent
+            val bgColor = when {
+                selected && engine.isLocal -> AntigravityPalette.WarmLampDim
+                selected -> AntigravityPalette.CalmSageDim
+                else -> AntigravityPalette.NightSurface
+            }
+            val borderColor = if (selected) activeAccent else AntigravityPalette.NightRule
+            val textColor = if (selected) activeAccent else AntigravityPalette.MistSlateInk
+
+            Box(
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 48.dp)
+                    .tactilePressScale(interactionSource, reducedMotion)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(bgColor)
+                    .border(1.dp, borderColor, RoundedCornerShape(16.dp))
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        role = Role.RadioButton,
+                        onClick = { onSelectEngine(engine) }
+                    )
+                    .padding(horizontal = 13.dp, vertical = 9.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = if (engine.isLocal) AntigravityIcons.TerminalBox else AntigravityIcons.OrbitDelta,
+                        contentDescription = null,
+                        tint = textColor,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = engine.label,
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = textColor,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                        ),
+                        maxLines = 1
+                    )
+                }
+            }
         }
     }
 }
@@ -1768,12 +1874,14 @@ private fun ErrorRecoveryStateCard(
 private fun PcBridgeSettingsDialog(
     initialHost: String,
     initialPort: String,
+    initialLocalModel: String,
     connectionState: BridgeConnectionState,
     onDismiss: () -> Unit,
-    onSaveAndTest: (String, String) -> Unit
+    onSaveAndTest: (String, String, String) -> Unit
 ) {
     var hostInput by rememberSaveable { mutableStateOf(initialHost) }
     var portInput by rememberSaveable { mutableStateOf(initialPort) }
+    var localModelInput by rememberSaveable { mutableStateOf(initialLocalModel) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1790,7 +1898,7 @@ private fun PcBridgeSettingsDialog(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "PC 브릿지 연결 설정",
+                    text = "PC 브릿지 & 로컬 AI 설정",
                     style = AntigravityTypography.CardTitle
                 )
             }
@@ -1798,7 +1906,7 @@ private fun PcBridgeSettingsDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "PC에서 `node pc-bridge-server.mjs` 실행 후 로컬 IP(예: 192.168.0.10)를 입력하세요. 에뮬레이터 기본값은 10.0.2.2입니다.",
+                    text = "USB 연결 시 127.0.0.1(adb reverse), 동일 Wi-Fi 시 PC의 LAN IP를 입력하세요. 로컬 AI 선택 시 지정된 모델 ID로 추론합니다.",
                     style = AntigravityTypography.SecondaryBody
                 )
 
@@ -1849,6 +1957,29 @@ private fun PcBridgeSettingsDialog(
                 }
 
                 Text(
+                    text = "로컬 AI 기본 모델 ID (Ollama / LM Studio)",
+                    style = AntigravityTypography.PillLabel.copy(color = AntigravityPalette.WarmLampGold)
+                )
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(AntigravityPalette.NightGround)
+                        .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                ) {
+                    BasicTextField(
+                        value = localModelInput,
+                        onValueChange = { localModelInput = it },
+                        textStyle = AntigravityTypography.CodeMono,
+                        cursorBrush = SolidColor(AntigravityPalette.WarmLampGold),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Text(
                     text = "현재 상태: ${connectionState.badgeLabel}",
                     style = AntigravityTypography.TabularMetric
                 )
@@ -1861,7 +1992,7 @@ private fun PcBridgeSettingsDialog(
                     .clip(RoundedCornerShape(14.dp))
                     .background(AntigravityPalette.CalmSageAccent)
                     .clickable(role = Role.Button) {
-                        onSaveAndTest(hostInput, portInput)
+                        onSaveAndTest(hostInput, portInput, localModelInput)
                     }
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 contentAlignment = Alignment.Center
