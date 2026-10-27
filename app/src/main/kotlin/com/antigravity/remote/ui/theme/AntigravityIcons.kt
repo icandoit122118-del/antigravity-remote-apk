@@ -409,23 +409,17 @@ object AntigravityIcons {
         ).apply {
             path(
                 stroke = SolidColor(Color.White),
-                strokeLineWidth = 1.9f,
+                strokeLineWidth = 2.0f,
                 strokeLineCap = StrokeCap.Round,
                 strokeLineJoin = StrokeJoin.Round
             ) {
-                // Clean folder + session lines icon
-                moveTo(3.5f, 7f)
-                lineTo(9.5f, 7f)
-                lineTo(11.5f, 9.2f)
-                lineTo(20.5f, 9.2f)
-                lineTo(20.5f, 18.5f)
-                lineTo(3.5f, 18.5f)
-                close()
-
-                moveTo(7.5f, 13f)
-                lineTo(16.5f, 13f)
-                moveTo(7.5f, 15.8f)
-                lineTo(13.5f, 15.8f)
+                // Hamburger drawer menu icon (☰)
+                moveTo(4f, 6.5f)
+                lineTo(20f, 6.5f)
+                moveTo(4f, 12f)
+                lineTo(20f, 12f)
+                moveTo(4f, 17.5f)
+                lineTo(20f, 17.5f)
             }
         }.build()
     }
