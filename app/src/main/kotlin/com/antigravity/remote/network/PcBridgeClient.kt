@@ -605,45 +605,50 @@ object PcBridgeClient {
         sessionId: String
     ): SystemPromptBundle? = withContext(Dispatchers.IO) {
         val defaults = defaultSystemPromptBundle()
-        for (candidate in candidateHosts(host)) {
-            var connection: HttpURLConnection? = null
-            try {
-                val url = URL("http://$candidate:$port/api/system-prompt")
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 1500
-                    readTimeout = 4500
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        for (retryPass in 0..1) {
+            for (candidate in candidateHosts(host)) {
+                var connection: HttpURLConnection? = null
+                try {
+                    val url = URL("http://$candidate:$port/api/system-prompt")
+                    connection = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        connectTimeout = 1500
+                        readTimeout = 4500
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    }
+                    val payload = JSONObject().apply {
+                        put("target", target)
+                        put("content", content)
+                        put("sessionId", sessionId)
+                    }.toString()
+                    OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                        writer.write(payload)
+                        writer.flush()
+                    }
+                    if (connection.responseCode in 200..299) {
+                        val responseText = BufferedReader(
+                            InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                        ).use { it.readText() }
+                        val json = JSONObject(responseText)
+                        val syncState = if (json.has("sessions")) parseSyncStateFromJson(json) else null
+                        lastHealthyHost = candidate
+                        return@withContext SystemPromptBundle(
+                            geminiMd = json.optString("geminiMd").ifBlank { defaults.geminiMd },
+                            designMotionMd = json.optString("designMotionMd").ifBlank { defaults.designMotionMd },
+                            claudeMd = json.optString("claudeMd").ifBlank { defaults.claudeMd },
+                            updatedAt = json.optString("updatedAt", "방금 저장됨"),
+                            syncState = syncState
+                        )
+                    }
+                } catch (_: Exception) {
+                    // Try next host
+                } finally {
+                    connection?.disconnect()
                 }
-                val payload = JSONObject().apply {
-                    put("target", target)
-                    put("content", content)
-                    put("sessionId", sessionId)
-                }.toString()
-                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
-                    writer.write(payload)
-                    writer.flush()
-                }
-                if (connection.responseCode in 200..299) {
-                    val responseText = BufferedReader(
-                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
-                    ).use { it.readText() }
-                    val json = JSONObject(responseText)
-                    val syncState = if (json.has("sessions")) parseSyncStateFromJson(json) else null
-                    lastHealthyHost = candidate
-                    return@withContext SystemPromptBundle(
-                        geminiMd = json.optString("geminiMd").ifBlank { defaults.geminiMd },
-                        designMotionMd = json.optString("designMotionMd").ifBlank { defaults.designMotionMd },
-                        claudeMd = json.optString("claudeMd").ifBlank { defaults.claudeMd },
-                        updatedAt = json.optString("updatedAt", "방금 저장됨"),
-                        syncState = syncState
-                    )
-                }
-            } catch (_: Exception) {
-                // Try next host
-            } finally {
-                connection?.disconnect()
+            }
+            if (retryPass == 0) {
+                delay(200)
             }
         }
         null
@@ -1049,50 +1054,55 @@ object PcBridgeClient {
         host: String,
         port: Int
     ): SunshineFramePayload? = withContext(Dispatchers.IO) {
-        for (candidate in candidateHosts(host)) {
-            var connection: HttpURLConnection? = null
-            try {
-                val url = URL("http://$candidate:$port/api/stream/frame")
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 900
-                    readTimeout = 3500
-                    useCaches = false
-                    setRequestProperty("Accept", "image/jpeg")
-                }
-                if (connection.responseCode in 200..299) {
-                    val bytes = connection.inputStream.use { it.readBytes() }
-                    if (bytes.isNotEmpty()) {
-                        val scrW = connection.getHeaderField("X-Sunshine-Screen-Width")?.toIntOrNull() ?: 1920
-                        val scrH = connection.getHeaderField("X-Sunshine-Screen-Height")?.toIntOrNull() ?: 1080
-                        val curX = connection.getHeaderField("X-Sunshine-Cursor-X")?.toIntOrNull() ?: (scrW / 2)
-                        val curY = connection.getHeaderField("X-Sunshine-Cursor-Y")?.toIntOrNull() ?: (scrH / 2)
-                        val seq = connection.getHeaderField("X-Sunshine-Frame-Seq")?.toLongOrNull() ?: 0L
-                        val rawEvent = connection.getHeaderField("X-Sunshine-Last-Event").orEmpty()
-                        val decodedEvent = try {
-                            if (rawEvent.isNotBlank()) URLDecoder.decode(rawEvent, "UTF-8") else "실시간 스트리밍 중"
-                        } catch (_: Exception) {
-                            "실시간 스트리밍 중"
-                        }
-                        lastHealthyHost = candidate
-                        return@withContext SunshineFramePayload(
-                            jpegBytes = bytes,
-                            metadata = SunshineFrameMetadata(
-                                screenWidth = scrW,
-                                screenHeight = scrH,
-                                cursorX = curX,
-                                cursorY = curY,
-                                frameSeq = seq,
-                                lastEvent = decodedEvent,
-                                isLiveFrame = true
-                            )
-                        )
+        for (retryPass in 0..1) {
+            for (candidate in candidateHosts(host)) {
+                var connection: HttpURLConnection? = null
+                try {
+                    val url = URL("http://$candidate:$port/api/stream/frame")
+                    connection = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 1200
+                        readTimeout = 4500
+                        useCaches = false
+                        setRequestProperty("Accept", "image/jpeg")
                     }
+                    if (connection.responseCode in 200..299) {
+                        val bytes = connection.inputStream.use { it.readBytes() }
+                        if (bytes.isNotEmpty()) {
+                            val scrW = connection.getHeaderField("X-Sunshine-Screen-Width")?.toIntOrNull() ?: 1920
+                            val scrH = connection.getHeaderField("X-Sunshine-Screen-Height")?.toIntOrNull() ?: 1080
+                            val curX = connection.getHeaderField("X-Sunshine-Cursor-X")?.toIntOrNull() ?: (scrW / 2)
+                            val curY = connection.getHeaderField("X-Sunshine-Cursor-Y")?.toIntOrNull() ?: (scrH / 2)
+                            val seq = connection.getHeaderField("X-Sunshine-Frame-Seq")?.toLongOrNull() ?: 0L
+                            val rawEvent = connection.getHeaderField("X-Sunshine-Last-Event").orEmpty()
+                            val decodedEvent = try {
+                                if (rawEvent.isNotBlank()) URLDecoder.decode(rawEvent, "UTF-8") else "실시간 스트리밍 중"
+                            } catch (_: Exception) {
+                                "실시간 스트리밍 중"
+                            }
+                            lastHealthyHost = candidate
+                            return@withContext SunshineFramePayload(
+                                jpegBytes = bytes,
+                                metadata = SunshineFrameMetadata(
+                                    screenWidth = scrW,
+                                    screenHeight = scrH,
+                                    cursorX = curX,
+                                    cursorY = curY,
+                                    frameSeq = seq,
+                                    lastEvent = decodedEvent,
+                                    isLiveFrame = true
+                                )
+                            )
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Try next host
+                } finally {
+                    connection?.disconnect()
                 }
-            } catch (_: Exception) {
-                // Try next host
-            } finally {
-                connection?.disconnect()
+            }
+            if (retryPass == 0) {
+                delay(200)
             }
         }
         null
@@ -1122,41 +1132,46 @@ object PcBridgeClient {
             }
         }.toString()
 
-        for (candidate in candidateHosts(host)) {
-            var connection: HttpURLConnection? = null
-            try {
-                val url = URL("http://$candidate:$port/api/stream/input")
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 450
-                    readTimeout = 800
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        for (retryPass in 0..1) {
+            for (candidate in candidateHosts(host)) {
+                var connection: HttpURLConnection? = null
+                try {
+                    val url = URL("http://$candidate:$port/api/stream/input")
+                    connection = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        connectTimeout = 800
+                        readTimeout = 2000
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    }
+                    OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                        writer.write(payload)
+                        writer.flush()
+                    }
+                    if (connection.responseCode in 200..299) {
+                        val responseText = BufferedReader(
+                            InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                        ).use { it.readText() }
+                        val json = JSONObject(responseText)
+                        lastHealthyHost = candidate
+                        return@withContext SunshineFrameMetadata(
+                            screenWidth = json.optInt("screenWidth", 1920),
+                            screenHeight = json.optInt("screenHeight", 1080),
+                            cursorX = json.optInt("hostX", 960),
+                            cursorY = json.optInt("hostY", 540),
+                            frameSeq = json.optLong("frameSeq", 0L),
+                            lastEvent = json.optString("lastEvent", "입력 전달됨"),
+                            isLiveFrame = true
+                        )
+                    }
+                } catch (_: Exception) {
+                    // Try next host
+                } finally {
+                    connection?.disconnect()
                 }
-                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
-                    writer.write(payload)
-                    writer.flush()
-                }
-                if (connection.responseCode in 200..299) {
-                    val responseText = BufferedReader(
-                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
-                    ).use { it.readText() }
-                    val json = JSONObject(responseText)
-                    lastHealthyHost = candidate
-                    return@withContext SunshineFrameMetadata(
-                        screenWidth = json.optInt("screenWidth", 1920),
-                        screenHeight = json.optInt("screenHeight", 1080),
-                        cursorX = json.optInt("hostX", 960),
-                        cursorY = json.optInt("hostY", 540),
-                        frameSeq = json.optLong("frameSeq", 0L),
-                        lastEvent = json.optString("lastEvent", "입력 전달됨"),
-                        isLiveFrame = true
-                    )
-                }
-            } catch (_: Exception) {
-                // Try next host
-            } finally {
-                connection?.disconnect()
+            }
+            if (retryPass == 0) {
+                delay(150)
             }
         }
         null
