@@ -196,7 +196,7 @@ fun AntigravityRemoteScreen() {
     var activeStreamJob by remember { mutableStateOf<Job?>(null) }
     var activeStreamingAgentMsgId by remember { mutableStateOf<String?>(null) }
     var isStreaming by remember { mutableStateOf(false) }
-    var streamPhaseLabel by remember { mutableStateOf("답변을 준비하고 있습니다...") }
+    var streamPhaseLabel by remember { mutableStateOf("생각중") }
     var steeringStatusLabel by remember { mutableStateOf("") }
     val pendingSteerNotes = remember { mutableStateListOf<String>() }
 
@@ -367,6 +367,7 @@ fun AntigravityRemoteScreen() {
         )
 
         isStreaming = true
+        streamPhaseLabel = "생각중"
         val port = bridgePortText.toIntOrNull() ?: 8766
 
         activeStreamJob = coroutineScope.launch {
@@ -1209,18 +1210,15 @@ private fun ChatMessageCard(
         Column(
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
-            val rawText = message.bodyText
-                .replace(Regex("""\s*\(~?/[^)]*\)"""), "")
-                .replace(Regex("""(?:[A-Za-z]:\\|[A-Za-z]:/|~/|/sdcard/)[^\s)`"']+"""), "")
-                .trim()
-            val (badgeTag, cleanBody) = remember(rawText, isUser) {
-                if (!isUser && rawText.startsWith("[") && rawText.contains("]")) {
-                    val closeIdx = rawText.indexOf("]")
-                    val tag = rawText.substring(1, closeIdx).trim()
-                    val rest = rawText.substring(closeIdx + 1).trimStart('\n', ' ')
-                    if (rest.isNotBlank()) tag to rest else null to rawText
+            val cleanBody = remember(message.bodyText, isUser) {
+                val stripped = message.bodyText
+                    .replace(Regex("""\s*\(~?/[^)]*\)"""), "")
+                    .replace(Regex("""(?:[A-Za-z]:\\|[A-Za-z]:/|~/|/sdcard/)[^\s)`"']+"""), "")
+                    .trim()
+                if (!isUser) {
+                    stripped.replace(Regex("""^\[[^\]]*\]\s*"""), "").trim()
                 } else {
-                    null to rawText
+                    stripped
                 }
             }
 
@@ -1232,35 +1230,7 @@ private fun ChatMessageCard(
                 Column(
                     modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp)
                 ) {
-                    if (badgeTag != null) {
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF1E3B36).copy(alpha = 0.42f))
-                                .padding(horizontal = 8.dp, vertical = 3.5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(AntigravityPalette.CalmSageAccent)
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = badgeTag,
-                                style = AntigravityTypography.PillLabel.copy(
-                                    color = AntigravityPalette.CalmSageAccent,
-                                    fontSize = 10.5.sp
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(7.dp))
-                    }
-
-                    // Main Answer Text Only (No author name or timestamp)
+                    // Main Answer Text Only (No top PC remote sync badge, no author name or timestamp)
                     Text(
                         text = cleanBody,
                         style = AntigravityTypography.ChatBody
@@ -1291,14 +1261,22 @@ private fun ChatMessageCard(
                         )
                     }
 
-                    // Subtle, single collapsible toggle for details (Collapsed by default!)
-                    val hasDetails = message.thoughtText.isNotBlank() || message.tools.isNotEmpty()
-                    if (!isUser && hasDetails) {
+                    // Process Stage Label with Marquee Light Sweep Shimmer:
+                    // 추론단계 -> "생각중", 추론 및 작업준비 확정 -> "작업준비중", 작업 마무리 -> "작업 마무리중", 다 끝나면 -> "작업완료"
+                    if (!isUser) {
+                        val isInProgress = isStreamingBubble || message.isStreaming
+                        val stageLabel = when {
+                            !isInProgress -> "작업완료"
+                            streamPhaseLabel.contains("마무리") || streamPhaseLabel.contains("스트리밍") -> "작업 마무리중"
+                            streamPhaseLabel.contains("작업준비") || streamPhaseLabel.contains("도구") || message.tools.isNotEmpty() -> "작업준비중"
+                            else -> "생각중"
+                        }
+
                         Spacer(modifier = Modifier.height(8.dp))
                         val detailInteraction = remember { MutableInteractionSource() }
                         Row(
                             modifier = Modifier
-                                .defaultMinSize(minHeight = 36.dp)
+                                .defaultMinSize(minHeight = 32.dp)
                                 .clip(RoundedCornerShape(10.dp))
                                 .clickable(
                                     interactionSource = detailInteraction,
@@ -1309,19 +1287,17 @@ private fun ChatMessageCard(
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = if (isDetailExpanded) "진행 과정 접기" else "진행 과정 보기",
-                                style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.MutedSlateInk,
-                                    fontSize = 12.sp
-                                )
+                            MarqueeLightSweepProcessText(
+                                text = stageLabel,
+                                isActive = isInProgress,
+                                reducedMotion = reducedMotion
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Icon(
                                 imageVector = if (isDetailExpanded) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
                                 contentDescription = null,
-                                tint = AntigravityPalette.MutedSlateInk,
-                                modifier = Modifier.size(14.dp)
+                                tint = if (isInProgress) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent.copy(alpha = 0.78f),
+                                modifier = Modifier.size(13.dp)
                             )
                         }
 
@@ -1344,6 +1320,11 @@ private fun ChatMessageCard(
                                         text = message.thoughtText,
                                         style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.5.sp)
                                     )
+                                } else {
+                                    Text(
+                                        text = "요청 의도 추론 및 작업 처리 완료",
+                                        style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.5.sp)
+                                    )
                                 }
                                 message.tools.forEach { tool ->
                                     Text(
@@ -1359,26 +1340,69 @@ private fun ChatMessageCard(
                     }
                 }
             }
-
-            // Plain text streaming indicator directly underneath the AI chat bubble ("답변 스트리밍 ai가 대화 말풍선 밑에 표시되게해 글자만")
-            if (!isUser && isStreamingBubble) {
-                Spacer(modifier = Modifier.height(5.dp))
-                Text(
-                    text = if (steeringStatusLabel.isNotBlank()) {
-                        "$streamPhaseLabel · $steeringStatusLabel"
-                    } else {
-                        "$streamPhaseLabel · 실시간 대화조정 가능"
-                    },
-                    style = AntigravityTypography.SecondaryBody.copy(
-                        color = AntigravityPalette.WarmLampGold.copy(alpha = 0.82f),
-                        fontSize = 11.sp,
-                        lineHeight = 14.sp
-                    ),
-                    modifier = Modifier.padding(start = 6.dp)
-                )
-            }
         }
     }
+}
+
+/**
+ * Marquee Light Sweep Text:
+ * When [isActive] is true ("생각중", "작업준비중", "작업 마무리중"), renders a bright signboard-style light beam
+ * sweeping continuously from left to right across the characters.
+ * When finished ("작업완료"), renders a calm steady sage-ivory tone.
+ */
+@Composable
+private fun MarqueeLightSweepProcessText(
+    text: String,
+    isActive: Boolean,
+    reducedMotion: Boolean
+) {
+    if (!isActive || reducedMotion) {
+        Text(
+            text = text,
+            style = AntigravityTypography.SecondaryBody.copy(
+                color = if (isActive) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent.copy(alpha = 0.85f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+        return
+    }
+
+    val infiniteTransition = rememberInfiniteTransition(label = "marqueeLightSweep")
+    val sweepProgress by infiniteTransition.animateFloat(
+        initialValue = -0.5f,
+        targetValue = 1.5f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1150, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "sweepX"
+    )
+
+    val spanWidth = 220f
+    val centerX = sweepProgress * spanWidth
+    val beamHalfWidth = 58f
+
+    val shimmerBrush = Brush.linearGradient(
+        colors = listOf(
+            Color(0xFF56636E),
+            Color(0xFF68C5B2),
+            Color(0xFFFFFDF8),
+            Color(0xFFE8B96D),
+            Color(0xFF56636E)
+        ),
+        start = Offset(centerX - beamHalfWidth, 0f),
+        end = Offset(centerX + beamHalfWidth, 8f)
+    )
+
+    Text(
+        text = text,
+        style = AntigravityTypography.SecondaryBody.copy(
+            brush = shimmerBrush,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+    )
 }
 
 @Composable

@@ -989,10 +989,10 @@ const server = http.createServer((req, res) => {
         } else if (isLocalAi) {
           reply = await tryLocalOllamaOrLmStudio(modelId, prompt);
           if (!reply) {
-            reply = `[PC 로컬 AI · ${engineLabel} (${modelId})]\n현재 안그래비티 세션(${sessionId.slice(0, 8)})과 연동된 로컬 파이프라인에서 "${prompt}" 요청을 처리했습니다. (PC 여유 메모리 ${freeMemMb}MB)`;
+            reply = `요청하신 "${prompt}" 작업을 로컬 파이프라인(${modelId})에서 처리했습니다.`;
           }
         } else {
-          reply = `[PC 안그래비티 리모트 (${os.hostname()}) 실시간 연동]\n모바일에서 보낸 "${prompt}" 요청이 현재 세션(${sessionId.slice(0, 8)}) 및 활성 프로젝트(${currentActiveProjectName})에 동기화되어 처리되었습니다.`;
+          reply = `요청하신 "${prompt}" 작업을 현재 세션 및 프로젝트(${currentActiveProjectName})에 반영했습니다.`;
         }
 
         const targetSessionId = recordOverlayExchange(sessionId, prompt, reply);

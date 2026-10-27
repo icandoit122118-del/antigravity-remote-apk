@@ -526,7 +526,7 @@ object PcBridgeClient {
         var currentCode: String? = null
         var tokenCounter = 0
 
-        // Phase 1: Stream Thought Process
+        // Phase 1: 추론 단계 -> "생각중"
         val thoughtChunks = chunkByWords(plannedThought, wordsPerChunk = 2)
         for (chunk in thoughtChunks) {
             currentThought += chunk
@@ -535,7 +535,7 @@ object PcBridgeClient {
             val speed = ((tokenCounter / elapsed) * 10.0).roundToInt() / 10.0
             emit(
                 StreamProgressFrame(
-                    phaseLabel = if (isLocalAi) "로컬 AI ($modelId) 추론 중..." else "생각 과정 정리 중...",
+                    phaseLabel = "생각중",
                     message = ChatMessage(
                         id = messageId,
                         role = MessageRole.AGENT,
@@ -544,7 +544,7 @@ object PcBridgeClient {
                         thoughtText = currentThought,
                         thoughtDurationSec = String.format("%.1fs", elapsed),
                         tools = emptyList(),
-                        bodyText = "생각을 가다듬고 있습니다...",
+                        bodyText = "질문 의도를 분석하고 추론하고 있습니다...",
                         isStreaming = true,
                         tokenCount = tokenCounter,
                         tokensPerSec = speed
@@ -554,7 +554,7 @@ object PcBridgeClient {
                     fromLiveBridge = isFromBridge
                 )
             )
-            delay(45L)
+            delay(85L)
         }
 
         val thoughtElapsedStr = String.format(
@@ -562,12 +562,12 @@ object PcBridgeClient {
             ((System.currentTimeMillis() - startMs).coerceAtLeast(100L)) / 1000.0
         )
 
-        // Phase 2: Tool Execution Running -> Completed
+        // Phase 2: 추론 및 작업준비 확정 단계 -> "작업준비중"
         val runningTool = plannedTool.copy(status = ToolRunStatus.RUNNING)
         val elapsedToolStart = ((System.currentTimeMillis() - startMs).coerceAtLeast(120L)) / 1000.0
         emit(
             StreamProgressFrame(
-                phaseLabel = "도구 실행 중 · ${plannedTool.title}",
+                phaseLabel = "작업준비중",
                 message = ChatMessage(
                     id = messageId,
                     role = MessageRole.AGENT,
@@ -576,7 +576,7 @@ object PcBridgeClient {
                     thoughtText = currentThought,
                     thoughtDurationSec = thoughtElapsedStr,
                     tools = listOf(runningTool),
-                    bodyText = "작업을 실행하고 결과를 수집합니다...",
+                    bodyText = "추론을 마치고 작업을 준비하고 있습니다...",
                     isStreaming = true,
                     tokenCount = tokenCounter,
                     tokensPerSec = 42.0
@@ -586,11 +586,11 @@ object PcBridgeClient {
                 fromLiveBridge = isFromBridge
             )
         )
-        delay(280L)
+        delay(650L)
 
         val completedTool = plannedTool.copy(status = ToolRunStatus.COMPLETED)
 
-        // Phase 3: Stream Main Answer Tokens
+        // Phase 3: 작업 마무리 단계 -> "작업 마무리중"
         val bodyChunks = chunkByWords(plannedBody, wordsPerChunk = 2)
         for (chunk in bodyChunks) {
             currentBody += chunk
@@ -599,7 +599,7 @@ object PcBridgeClient {
             val speed = ((tokenCounter / elapsed) * 10.0).roundToInt() / 10.0
             emit(
                 StreamProgressFrame(
-                    phaseLabel = if (isLocalAi) "로컬 AI ($modelId) 스트리밍 중..." else "답변 스트리밍 중...",
+                    phaseLabel = "작업 마무리중",
                     message = ChatMessage(
                         id = messageId,
                         role = MessageRole.AGENT,
@@ -620,7 +620,7 @@ object PcBridgeClient {
                     fromLiveBridge = isFromBridge
                 )
             )
-            delay(38L)
+            delay(65L)
         }
 
         // Attach code snippet if present
@@ -632,9 +632,10 @@ object PcBridgeClient {
         val finalElapsed = ((System.currentTimeMillis() - startMs).coerceAtLeast(250L)) / 1000.0
         val finalSpeed = ((tokenCounter / finalElapsed) * 10.0).roundToInt() / 10.0
 
+        // Phase 4: 다 끝나면 -> "작업완료"
         emit(
             StreamProgressFrame(
-                phaseLabel = if (isLocalAi) "로컬 AI ($modelId) 완료" else "스트리밍 완료",
+                phaseLabel = "작업완료",
                 message = ChatMessage(
                     id = messageId,
                     role = MessageRole.AGENT,
