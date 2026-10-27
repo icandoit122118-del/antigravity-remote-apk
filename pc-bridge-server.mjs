@@ -26,8 +26,43 @@ const PORT = portArgIndex !== -1 && process.argv[portArgIndex + 1]
 
 const ANTIGRAVITY_ROOT = path.join(os.homedir(), '.gemini', 'antigravity');
 const BRAIN_DIR = path.join(ANTIGRAVITY_ROOT, 'brain');
+const ANNOTATIONS_DIR = path.join(ANTIGRAVITY_ROOT, 'annotations');
 const SCRATCH_DIR = path.join(ANTIGRAVITY_ROOT, 'scratch');
 const PRIMARY_CONVERSATION_ID = 'ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8';
+
+function readAnnotationSessionInfo(convId) {
+  try {
+    const pbtxtPath = path.join(ANNOTATIONS_DIR, `${convId}.pbtxt`);
+    if (!fs.existsSync(pbtxtPath)) return null;
+    const raw = fs.readFileSync(pbtxtPath, 'utf8');
+    const titleMatch = raw.match(/title:\s*"((?:[^"\\]|\\.)*)"/);
+    const secMatch = raw.match(/seconds:\s*(\d+)/);
+    let title = null;
+    if (titleMatch && titleMatch[1]) {
+      const inner = titleMatch[1];
+      // Decode octal escapes if any exist, otherwise keep UTF-8 string
+      if (/\\[0-7]{3}/.test(inner)) {
+        const bytes = [];
+        for (let i = 0; i < inner.length; i++) {
+          if (inner[i] === '\\' && i + 3 < inner.length && /^[0-7]{3}$/.test(inner.slice(i + 1, i + 4))) {
+            bytes.push(parseInt(inner.slice(i + 1, i + 4), 8));
+            i += 3;
+          } else {
+            const buf = Buffer.from(inner[i], 'utf8');
+            for (const b of buf) bytes.push(b);
+          }
+        }
+        title = Buffer.from(bytes).toString('utf8');
+      } else {
+        title = inner.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+      }
+    }
+    const lastViewSec = secMatch ? Number(secMatch[1]) : 0;
+    return { title: title ? title.trim() : null, lastViewSec };
+  } catch {
+    return null;
+  }
+}
 
 let currentActiveSessionId = PRIMARY_CONVERSATION_ID;
 let currentActiveProjectName = 'antigravity-remote-apk';
@@ -159,6 +194,19 @@ function createAntigravitySession(rawTitle, rawProjectFolder = '') {
     JSON.stringify(initialUserStep) + '\n' + JSON.stringify(initialAgentStep) + '\n',
     'utf8'
   );
+
+  try {
+    fs.mkdirSync(ANNOTATIONS_DIR, { recursive: true });
+    const nowSec = Math.floor(Date.now() / 1000);
+    const escapedTitle = title.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    fs.writeFileSync(
+      path.join(ANNOTATIONS_DIR, `${sessionId}.pbtxt`),
+      `title:"${escapedTitle}" last_user_view_time:{seconds:${nowSec} nanos:0}`,
+      'utf8'
+    );
+  } catch {
+    // Ignore annotation write error
+  }
 
   mobileSessionMeta.set(sessionId, {
     id: sessionId,
@@ -304,22 +352,24 @@ function parseTranscriptSession(convId) {
     if (recentMessages.length === 0) return null;
 
     const customMeta = mobileSessionMeta.get(convId);
+    const annotationInfo = readAnnotationSessionInfo(convId);
     const firstUserMsg = messages.find((m) => m.role === 'USER');
     const isPrimary = convId === PRIMARY_CONVERSATION_ID;
     const title = customMeta?.title
+      || annotationInfo?.title
       || (isPrimary
-        ? '현재 안그래비티 세션 (실시간 연동)'
-        : (firstUserMsg ? firstUserMsg.bodyText.slice(0, 20) : `세션 ${convId.slice(0, 8)}`));
+        ? 'Anti-Gravity Program APK Conversion'
+        : (firstUserMsg ? firstUserMsg.bodyText.slice(0, 26) : `세션 ${convId.slice(0, 8)}`));
 
     let inferredFolder = customMeta?.projectFolder || (isPrimary ? currentActiveProjectName : '');
     if (!inferredFolder) {
-      const joinedText = messages.map((m) => m.bodyText).join(' ');
-      if (joinedText.includes('전기산업기사') || joinedText.includes('electric-engineer')) {
+      const joinedText = `${title} ${messages.map((m) => m.bodyText).join(' ')}`;
+      if (joinedText.includes('Diablo') || joinedText.includes('D2R') || joinedText.includes('야영지') || joinedText.includes('d2r')) {
+        inferredFolder = 'D2R-HUD';
+      } else if (joinedText.includes('전기산업기사') || joinedText.includes('기출문제') || joinedText.includes('electric-engineer')) {
         inferredFolder = 'electric-engineer-2026';
       } else if (joinedText.includes('wikidocs') || joinedText.includes('파이썬')) {
         inferredFolder = 'wikidocs-170810-pdf';
-      } else if (joinedText.includes('D2R') || joinedText.includes('야영지') || joinedText.includes('d2r')) {
-        inferredFolder = 'D2R-HUD';
       } else {
         inferredFolder = currentActiveProjectName;
       }
@@ -333,7 +383,8 @@ function parseTranscriptSession(convId) {
         : `폴더: ${inferredFolder}`,
       branchName: inferredFolder,
       activeTaskSummary: isPrimary ? 'PC 안그래비티 리모트 컨트롤 및 실시간 세션 연동' : title,
-      durationTag: convId === currentActiveSessionId ? '활성' : '동기화됨',
+      durationTag: convId === currentActiveSessionId ? 'now' : '진행중',
+      lastViewSec: annotationInfo?.lastViewSec || 0,
       quickPrompts: [
         '오늘 해야 할 일을 깔끔하게 정리해줘',
         'PC 상태와 프로젝트 폴더 목록 보여줘',
@@ -374,11 +425,13 @@ function getLiveAntigravitySessions() {
         .map((e) => {
           const tPath = path.join(BRAIN_DIR, e.name, '.system_generated', 'logs', 'transcript.jsonl');
           const stat = fs.existsSync(tPath) ? fs.statSync(tPath) : null;
-          return { id: e.name, mtimeMs: stat ? stat.mtimeMs : 0 };
+          const ann = readAnnotationSessionInfo(e.name);
+          const sortScore = (ann && ann.lastViewSec ? ann.lastViewSec * 1000 : 0) || (stat ? stat.mtimeMs : 0);
+          return { id: e.name, mtimeMs: stat ? stat.mtimeMs : 0, sortScore };
         })
         .filter((e) => e.mtimeMs > 0)
-        .sort((a, b) => b.mtimeMs - a.mtimeMs)
-        .slice(0, 4);
+        .sort((a, b) => b.sortScore - a.sortScore)
+        .slice(0, 5);
 
       for (const entry of entries) {
         const parsed = parseTranscriptSession(entry.id);
