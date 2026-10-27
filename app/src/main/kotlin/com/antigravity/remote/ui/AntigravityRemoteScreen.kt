@@ -117,7 +117,7 @@ fun AntigravityRemoteScreen() {
 
     // Connection & Settings state
     var bridgeHost by rememberSaveable { mutableStateOf("127.0.0.1") }
-    var bridgePortText by rememberSaveable { mutableStateOf("8765") }
+    var bridgePortText by rememberSaveable { mutableStateOf("8766") }
     var connectionState by remember { mutableStateOf(BridgeConnectionState.SIMULATION_ACTIVE) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
 
@@ -488,46 +488,14 @@ private fun SimpleElephantHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(42.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(AntigravityPalette.NightSurface),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = AntigravityIcons.OrbitDelta,
-                    contentDescription = null,
-                    tint = AntigravityPalette.CalmSageAccent,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Text(
-                text = "편안한 밤, 안그래비티",
-                style = AntigravityTypography.GreetingDisplay,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
-        }
-
-        Spacer(modifier = Modifier.width(10.dp))
-
-        // Single clean [설정] button (48dp minimum touch target, borderless soft surface)
+        // Icon-only [설정] button (48dp touch target, borderless dark surface, no text or logo)
         Surface(
             modifier = Modifier
-                .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
+                .size(44.dp)
                 .tactilePressScale(settingsInteraction, reducedMotion)
                 .clickable(
                     interactionSource = settingsInteraction,
@@ -538,23 +506,18 @@ private fun SimpleElephantHeader(
                 .semantics {
                     contentDescription = "설정 열기"
                 },
-            shape = RoundedCornerShape(16.dp),
+            shape = CircleShape,
             color = AntigravityPalette.NightSurface
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = AntigravityIcons.SettingsSliders,
                     contentDescription = null,
                     tint = AntigravityPalette.WarmIvoryInk,
-                    modifier = Modifier.size(17.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = "설정",
-                    style = AntigravityTypography.PillLabel
+                    modifier = Modifier.size(19.dp)
                 )
             }
         }

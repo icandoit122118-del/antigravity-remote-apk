@@ -18,7 +18,7 @@ import path from 'node:path';
 const portArgIndex = process.argv.indexOf('--port');
 const PORT = portArgIndex !== -1 && process.argv[portArgIndex + 1]
   ? Number(process.argv[portArgIndex + 1])
-  : Number(process.env.ANTIGRAVITY_BRIDGE_PORT || 8765);
+  : Number(process.env.ANTIGRAVITY_BRIDGE_PORT || 8766);
 
 const BRAIN_DIR = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
 const PRIMARY_CONVERSATION_ID = 'ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8';

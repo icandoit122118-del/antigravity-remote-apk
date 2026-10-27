@@ -15,8 +15,8 @@ class AntigravityRemoteUnitTest {
         val sessions = AntigravityFixtures.defaultSessions()
         assertTrue("Default sessions must not be empty", sessions.isNotEmpty())
         val first = sessions.first()
-        assertEquals("session-apk-build", first.id)
-        assertEquals("오늘의 대화", first.title)
+        assertEquals("ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8", first.id)
+        assertEquals("현재 안그래비티 세션 (실시간 연동)", first.title)
         assertTrue("First session must contain messages", first.messages.size >= 2)
     }
 
@@ -44,6 +44,6 @@ class AntigravityRemoteUnitTest {
     fun inspectorModes_coverAllFourDataStatesPlusBreakUi() {
         val modes = InspectorViewMode.entries
         assertEquals(5, modes.size)
-        assertEquals(0xFF11161BL, AntigravityPalette.NightGround.value.toLong() shr 32 and 0xFFFFFFFFL)
+        assertEquals(0xFF000000L, AntigravityPalette.NightGround.value.toLong() shr 32 and 0xFFFFFFFFL)
     }
 }
