@@ -1,35 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-
-    <!-- Pure Onyx Black Ground (#000000) -->
+    <!-- Deep Obsidian Black base -->
     <path
-        android:fillColor="#000000"
+        android:fillColor="#08090C"
         android:pathData="M0,0h108v108h-108z" />
-
-    <!-- Olympian Gold & Calm Sage Core Aura -->
+    <!-- Subtle inner obsidian gradient tone -->
     <path
-        android:pathData="M0,0h108v108h-108z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:centerX="54"
-                android:centerY="50"
-                android:gradientRadius="44"
-                android:type="radial">
-                <item
-                    android:color="#242921"
-                    android:offset="0.0" />
-                <item
-                    android:color="#0E1917"
-                    android:offset="0.52" />
-                <item
-                    android:color="#000000"
-                    android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
+        android:fillColor="#0E0F12"
+        android:pathData="M54,54m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0" />
 </vector>

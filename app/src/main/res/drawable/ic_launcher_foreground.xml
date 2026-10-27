@@ -1,97 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 1. Subtle Celestial Speed Ring Behind Hermes Crest -->
+    <!-- Central tapered needle staff (Pure Platinum White) -->
     <path
-        android:pathData="M54,26 A28,28 0 1,1 54,82 A28,28 0 1,1 54,26 Z"
-        android:strokeWidth="1.2"
-        android:fillColor="#00000000"
-        android:strokeColor="#28E8B96D" />
+        android:fillColor="#FAFCFF"
+        android:pathData="M52.3,31.1 L55.7,31.1 L54.6,83.3 L53.4,83.3 Z" />
 
-    <!-- 2. Left Sweeping Hermes Wing (Three Sculpted Feathers) -->
+    <!-- Top minimal orb (Pure Platinum White) -->
     <path
-        android:pathData="M50,43 C42,41 33,35 26,28 C27,36 33,42 42,45 C34,45 28,42 23,38 C25,45 32,49 43,50 C36,51 31,49 27,47 C30,53 38,56 49,55 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="24"
-                android:startY="28"
-                android:endX="50"
-                android:endY="55"
-                android:type="linear">
-                <item android:color="#FFFDF8" android:offset="0.0" />
-                <item android:color="#E8B96D" android:offset="0.52" />
-                <item android:color="#68C5B2" android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
+        android:fillColor="#FAFCFF"
+        android:pathData="M54,24.8m-3.2,0a3.2,3.2 0,1 1,6.4 0a3.2,3.2 0,1 1,-6.4 0" />
 
-    <!-- 3. Right Sweeping Hermes Wing (Three Sculpted Feathers) -->
+    <!-- Left Upper Wing Blade (Pure Platinum White) -->
     <path
-        android:pathData="M58,43 C66,41 75,35 82,28 C81,36 75,42 66,45 C74,45 80,42 85,38 C83,45 76,49 65,50 C72,51 77,49 81,47 C78,53 70,56 59,55 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="84"
-                android:startY="28"
-                android:endX="58"
-                android:endY="55"
-                android:type="linear">
-                <item android:color="#FFFDF8" android:offset="0.0" />
-                <item android:color="#E8B96D" android:offset="0.52" />
-                <item android:color="#68C5B2" android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
+        android:fillColor="#FAFCFF"
+        android:pathData="M48.7,45.9 L20.6,33.2 L27.4,45.9 L48.7,53.3 Z" />
 
-    <!-- 4. Twin Intertwined Caduceus Signal Serpents (Bi-Directional PC-Mobile Link) -->
+    <!-- Left Middle Wing Blade (Cool Platinum Silver) -->
     <path
-        android:pathData="M44,53 C44,60 64,61 64,68 C64,73 58,76 54,77"
-        android:strokeWidth="2.4"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000"
-        android:strokeColor="#68C5B2" />
+        android:fillColor="#9EA8B6"
+        android:pathData="M48.7,56.1 L28.3,49.4 L33.8,59.1 L48.7,62.4 Z" />
 
+    <!-- Left Lower Wing Blade (Cool Platinum Silver) -->
     <path
-        android:pathData="M64,53 C64,60 44,61 44,68 C44,73 50,76 54,77"
-        android:strokeWidth="2.4"
-        android:strokeLineCap="round"
-        android:fillColor="#00000000"
-        android:strokeColor="#E8B96D" />
+        android:fillColor="#9EA8B6"
+        android:pathData="M49.4,65.2 L36.4,61.7 L40.9,69.1 L49.4,70.5 Z" />
 
-    <!-- 5. Central Hermes Herald Staff (Caduceus Shaft) -->
+    <!-- Right Upper Wing Blade (Pure Platinum White) -->
     <path
-        android:pathData="M52.3,34 L55.7,34 L55.2,80 L52.8,80 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:startX="54"
-                android:startY="34"
-                android:endX="54"
-                android:endY="80"
-                android:type="linear">
-                <item android:color="#FFFDF8" android:offset="0.0" />
-                <item android:color="#E8B96D" android:offset="0.65" />
-                <item android:color="#68C5B2" android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
+        android:fillColor="#FAFCFF"
+        android:pathData="M59.3,45.9 L87.4,33.2 L80.6,45.9 L59.3,53.3 Z" />
 
-    <!-- 6. Radiant Apex Orb of Hermes -->
+    <!-- Right Middle Wing Blade (Cool Platinum Silver) -->
     <path
-        android:pathData="M54,24.5 A5.2,5.2 0 1,1 54,34.9 A5.2,5.2 0 1,1 54,24.5 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:centerX="52.5"
-                android:centerY="28.0"
-                android:gradientRadius="7.0"
-                android:type="radial">
-                <item android:color="#FFFFFF" android:offset="0.0" />
-                <item android:color="#F4D393" android:offset="0.55" />
-                <item android:color="#D49B43" android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
+        android:fillColor="#9EA8B6"
+        android:pathData="M59.3,56.1 L79.7,49.4 L74.2,59.1 L59.3,62.4 Z" />
+
+    <!-- Right Lower Wing Blade (Cool Platinum Silver) -->
+    <path
+        android:fillColor="#9EA8B6"
+        android:pathData="M58.6,65.2 L71.6,61.7 L67.1,69.1 L58.6,70.5 Z" />
 </vector>
