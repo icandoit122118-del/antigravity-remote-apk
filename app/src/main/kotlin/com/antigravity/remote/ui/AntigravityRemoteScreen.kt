@@ -498,11 +498,6 @@ private fun SimpleElephantHeader(
     onOpenSettings: () -> Unit
 ) {
     val settingsInteraction = remember { MutableInteractionSource() }
-    val dotColor = when {
-        connectionState == BridgeConnectionState.DISCONNECTED_ERROR -> AntigravityPalette.SoftCoralDanger
-        activeEngine.isLocal -> AntigravityPalette.WarmLampGold
-        else -> AntigravityPalette.CalmSageAccent
-    }
 
     Row(
         modifier = Modifier
@@ -519,8 +514,7 @@ private fun SimpleElephantHeader(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(14.dp))
-                    .background(AntigravityPalette.NightSurface)
-                    .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(14.dp)),
+                    .background(AntigravityPalette.NightSurface),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -533,35 +527,18 @@ private fun SimpleElephantHeader(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "편안한 밤, 안그래비티",
-                    style = AntigravityTypography.GreetingDisplay,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(dotColor)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "${activeEngine.shortName} · ${connectionState.badgeLabel}",
-                        style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.5.sp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
+            Text(
+                text = "편안한 밤, 안그래비티",
+                style = AntigravityTypography.GreetingDisplay,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
         }
 
         Spacer(modifier = Modifier.width(10.dp))
 
-        // Single clean [설정] button (48dp minimum touch target)
+        // Single clean [설정] button (48dp minimum touch target, borderless soft surface)
         Surface(
             modifier = Modifier
                 .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
@@ -576,8 +553,7 @@ private fun SimpleElephantHeader(
                     contentDescription = "설정 열기"
                 },
             shape = RoundedCornerShape(16.dp),
-            color = AntigravityPalette.NightSurface,
-            border = BorderStroke(1.dp, AntigravityPalette.NightRule)
+            color = AntigravityPalette.NightSurface
         ) {
             Row(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -610,17 +586,11 @@ private fun ChatMessageCard(
 ) {
     val isUser = message.role == MessageRole.USER
     val cardColor = if (isUser) AntigravityPalette.NightRaised else AntigravityPalette.NightSurface
-    val borderColor = if (message.isStreaming) {
-        AntigravityPalette.CalmSageAccent.copy(alpha = 0.7f)
-    } else {
-        AntigravityPalette.NightRule
-    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = cardColor,
-        border = BorderStroke(1.dp, borderColor)
+        color = cardColor
     ) {
         Column(
             modifier = Modifier.padding(16.dp)
@@ -737,7 +707,6 @@ private fun ChatMessageCard(
                             .padding(top = 6.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(AntigravityPalette.NightGround)
-                            .border(1.dp, AntigravityPalette.NightRuleSubtle, RoundedCornerShape(14.dp))
                             .padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -778,7 +747,6 @@ private fun CodeSnippetCard(
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(AntigravityPalette.NightCodeWell)
-            .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(16.dp))
     ) {
         Row(
             modifier = Modifier
@@ -863,8 +831,7 @@ private fun ActiveStreamBanner(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp),
         shape = RoundedCornerShape(18.dp),
-        color = AntigravityPalette.NightRaised,
-        border = BorderStroke(1.dp, AntigravityPalette.WarmLampGold.copy(alpha = 0.6f))
+        color = AntigravityPalette.NightRaised
     ) {
         Row(
             modifier = Modifier
@@ -953,7 +920,6 @@ private fun SimplePromptInputDock(
                             .tactilePressScale(chipInteraction, reducedMotion)
                             .clip(RoundedCornerShape(22.dp))
                             .background(AntigravityPalette.NightSurface)
-                            .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(22.dp))
                             .clickable(
                                 interactionSource = chipInteraction,
                                 indication = null,
@@ -977,7 +943,7 @@ private fun SimplePromptInputDock(
             }
         }
 
-        // Clean Input Row
+        // Clean Borderless Input Row
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -989,12 +955,7 @@ private fun SimplePromptInputDock(
                     .weight(1f)
                     .defaultMinSize(minHeight = 48.dp)
                     .clip(RoundedCornerShape(24.dp))
-                    .background(AntigravityPalette.NightSurface)
-                    .border(
-                        width = if (isFocused) 1.5.dp else 1.dp,
-                        color = if (isFocused) AntigravityPalette.CalmSageAccent else AntigravityPalette.NightRule,
-                        shape = RoundedCornerShape(24.dp)
-                    )
+                    .background(if (isFocused) AntigravityPalette.NightRaised else AntigravityPalette.NightSurface)
                     .padding(horizontal = 18.dp, vertical = 12.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
@@ -1041,7 +1002,6 @@ private fun SimplePromptInputDock(
                     .tactilePressScale(sendButtonInteraction, reducedMotion)
                     .clip(CircleShape)
                     .background(buttonBg)
-                    .border(1.dp, AntigravityPalette.NightRule, CircleShape)
                     .clickable(
                         interactionSource = sendButtonInteraction,
                         indication = null,
@@ -1133,7 +1093,6 @@ private fun UnifiedSettingsDialog(
                     val isSelected = engine.id == selectedEngineId
                     val accent = if (engine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent
                     val cardBg = if (isSelected) AntigravityPalette.NightRaised else AntigravityPalette.NightGround
-                    val borderCol = if (isSelected) accent else AntigravityPalette.NightRule
 
                     Column(
                         modifier = Modifier
@@ -1141,7 +1100,6 @@ private fun UnifiedSettingsDialog(
                             .defaultMinSize(minHeight = 48.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(cardBg)
-                            .border(if (isSelected) 1.5.dp else 1.dp, borderCol, RoundedCornerShape(14.dp))
                             .clickable(role = Role.RadioButton) {
                                 onSelectEngine(engine)
                             }
@@ -1194,11 +1152,6 @@ private fun UnifiedSettingsDialog(
                                 .defaultMinSize(minHeight = 48.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (selected) AntigravityPalette.CalmSageDim else AntigravityPalette.NightGround)
-                                .border(
-                                    1.dp,
-                                    if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.NightRule,
-                                    RoundedCornerShape(12.dp)
-                                )
                                 .clickable(role = Role.Button) {
                                     onSelectSession(idx)
                                 }
@@ -1224,7 +1177,6 @@ private fun UnifiedSettingsDialog(
                         .defaultMinSize(minHeight = 48.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(AntigravityPalette.NightGround)
-                        .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(12.dp))
                         .clickable(role = Role.Button, onClick = onClearCurrentChat)
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     contentAlignment = Alignment.Center
@@ -1277,7 +1229,6 @@ private fun UnifiedSettingsDialog(
                                 .defaultMinSize(minHeight = 48.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(AntigravityPalette.NightGround)
-                                .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(12.dp))
                                 .padding(horizontal = 12.dp, vertical = 12.dp)
                         ) {
                             BasicTextField(
@@ -1300,7 +1251,6 @@ private fun UnifiedSettingsDialog(
                                 .defaultMinSize(minHeight = 48.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(AntigravityPalette.NightGround)
-                                .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(12.dp))
                                 .padding(horizontal = 12.dp, vertical = 12.dp)
                         ) {
                             BasicTextField(
@@ -1323,7 +1273,6 @@ private fun UnifiedSettingsDialog(
                                 .defaultMinSize(minHeight = 48.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(AntigravityPalette.NightGround)
-                                .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(12.dp))
                                 .padding(horizontal = 12.dp, vertical = 12.dp)
                         ) {
                             BasicTextField(
@@ -1350,11 +1299,6 @@ private fun UnifiedSettingsDialog(
                                     .defaultMinSize(minHeight = 44.dp)
                                     .clip(RoundedCornerShape(10.dp))
                                     .background(if (isCurrent) AntigravityPalette.CalmSageDim else AntigravityPalette.NightGround)
-                                    .border(
-                                        1.dp,
-                                        if (isCurrent) AntigravityPalette.CalmSageAccent else AntigravityPalette.NightRule,
-                                        RoundedCornerShape(10.dp)
-                                    )
                                     .clickable(role = Role.Button) {
                                         onSelectViewMode(mode)
                                     }
@@ -1445,8 +1389,7 @@ private fun LoadingStateCardList(reducedMotion: Boolean) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
-                color = AntigravityPalette.NightSurface.copy(alpha = effectiveAlpha),
-                border = BorderStroke(1.dp, AntigravityPalette.NightRule)
+                color = AntigravityPalette.NightSurface.copy(alpha = effectiveAlpha)
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Box(
@@ -1493,8 +1436,7 @@ private fun EmptyNightStateCard(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
-            color = AntigravityPalette.NightSurface,
-            border = BorderStroke(1.dp, AntigravityPalette.NightRule)
+            color = AntigravityPalette.NightSurface
         ) {
             Column(
                 modifier = Modifier.padding(22.dp),
@@ -1540,7 +1482,6 @@ private fun EmptyNightStateCard(
                             .tactilePressScale(interaction, reducedMotion)
                             .clip(RoundedCornerShape(14.dp))
                             .background(AntigravityPalette.NightRaised)
-                            .border(1.dp, AntigravityPalette.CalmSageAccent.copy(alpha = 0.5f), RoundedCornerShape(14.dp))
                             .clickable(
                                 interactionSource = interaction,
                                 indication = null,
@@ -1577,8 +1518,7 @@ private fun ErrorRecoveryStateCard(
         Surface(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(20.dp),
-            color = AntigravityPalette.NightSurface,
-            border = BorderStroke(1.dp, AntigravityPalette.SoftCoralDanger)
+            color = AntigravityPalette.NightSurface
         ) {
             Column(modifier = Modifier.padding(20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1615,7 +1555,6 @@ private fun ErrorRecoveryStateCard(
                             .tactilePressScale(retryInteraction, reducedMotion)
                             .clip(RoundedCornerShape(14.dp))
                             .background(AntigravityPalette.NightRaised)
-                            .border(1.dp, AntigravityPalette.NightRule, RoundedCornerShape(14.dp))
                             .clickable(
                                 interactionSource = retryInteraction,
                                 indication = null,
