@@ -186,24 +186,6 @@ fun AntigravityRemoteScreen() {
     var systemPromptBundle by remember { mutableStateOf(PcBridgeClient.defaultSystemPromptBundle()) }
     var systemPromptStatusBanner by remember { mutableStateOf("") }
 
-    // AI Engine, Reasoning Effort & Local AI Selection
-    val engineOptions = remember { AiEngineCatalog.options }
-    var selectedEngineId by rememberSaveable { mutableStateOf(engineOptions.first().id) }
-    var selectedReasoning by rememberSaveable { mutableStateOf(ReasoningEffort.MEDIUM) }
-    var showModelReasoningPopup by rememberSaveable { mutableStateOf(false) }
-    var showPlusMenuPopup by rememberSaveable { mutableStateOf(false) }
-    var customLocalModelId by rememberSaveable { mutableStateOf("") }
-    val activeEngine by remember(selectedEngineId) {
-        derivedStateOf {
-            engineOptions.find { it.id == selectedEngineId } ?: engineOptions.first()
-        }
-    }
-    val effectiveModelId = if (activeEngine.isLocal && customLocalModelId.isNotBlank()) {
-        customLocalModelId
-    } else {
-        activeEngine.modelId
-    }
-
     // PC Projects synced from bridge
     val pcProjects = remember { mutableStateListOf<PcProjectFolder>() }
     var activePcProjectName by rememberSaveable { mutableStateOf("antigravity-remote-apk") }
@@ -238,6 +220,22 @@ fun AntigravityRemoteScreen() {
                 ?: fallbackSession
         }
     }
+
+    // Per-Session AI Model & Reasoning Effort Selection (Each session remembers its own model!)
+    val engineOptions = remember { AiEngineCatalog.options }
+    val sessionEngineMap = remember { mutableStateMapOf<String, String>() }
+    val sessionReasoningMap = remember { mutableStateMapOf<String, ReasoningEffort>() }
+    var showModelReasoningPopup by rememberSaveable { mutableStateOf(false) }
+    var showPlusMenuPopup by rememberSaveable { mutableStateOf(false) }
+
+    val selectedEngineId = sessionEngineMap[currentSession.id] ?: engineOptions.first().id
+    val selectedReasoning = sessionReasoningMap[currentSession.id] ?: ReasoningEffort.MEDIUM
+    val activeEngine by remember(selectedEngineId) {
+        derivedStateOf {
+            engineOptions.find { it.id == selectedEngineId } ?: engineOptions.first()
+        }
+    }
+    val effectiveModelId = activeEngine.modelId
 
     // Streaming & Mid-Stream Steering (대화조정) State
     var activeStreamJob by remember { mutableStateOf<Job?>(null) }
@@ -1097,10 +1095,10 @@ fun AntigravityRemoteScreen() {
                     if (showModelReasoningPopup) showPlusMenuPopup = false
                 },
                 onSelectEngine = { engine ->
-                    selectedEngineId = engine.id
+                    sessionEngineMap[currentSession.id] = engine.id
                 },
                 onSelectReasoning = { effort ->
-                    selectedReasoning = effort
+                    sessionReasoningMap[currentSession.id] = effort
                 }
             )
         }
@@ -1319,15 +1317,15 @@ fun AntigravityRemoteScreen() {
             }
         }
 
-        // Unified Settings Dialog (Session/Project creation removed and moved to Top-Left Icon!)
+        // Unified Settings Dialog (5 Categories: 일반, 알림, 사용량 한도, 메모리, 플러그인; Model selection is per-session in input bar!)
         if (showSettingsSheet) {
             UnifiedSettingsDialog(
-                engines = engineOptions,
-                selectedEngineId = selectedEngineId,
+                currentSessionTitle = currentSession.title,
+                currentSessionModelLabel = activeEngine.shortName,
+                currentSessionTokenCount = currentSession.messages.sumOf { it.tokenCount },
                 currentViewMode = viewMode,
                 initialHost = bridgeHost,
                 initialPort = bridgePortText,
-                initialLocalModel = customLocalModelId,
                 connectionState = connectionState,
                 autoSyncEnabled = autoSyncEnabled,
                 autoSyncRetryCount = autoSyncRetryCount,
@@ -1338,9 +1336,6 @@ fun AntigravityRemoteScreen() {
                     } else if (!enabled && connectionState == BridgeConnectionState.AUTO_RESYNCING) {
                         connectionState = BridgeConnectionState.SIMULATION_ACTIVE
                     }
-                },
-                onSelectEngine = { engine ->
-                    selectedEngineId = engine.id
                 },
                 onExecuteRemoteCommand = { cmd ->
                     val port = bridgePortText.toIntOrNull() ?: 8766
@@ -1397,10 +1392,9 @@ fun AntigravityRemoteScreen() {
                     showSettingsSheet = false
                 },
                 onDismiss = { showSettingsSheet = false },
-                onSaveSettings = { newHost, newPort, newLocalModel ->
+                onSaveSettings = { newHost, newPort ->
                     bridgeHost = newHost.ifBlank { "127.0.0.1" }
                     bridgePortText = newPort.ifBlank { "8766" }
-                    customLocalModelId = newLocalModel.trim()
                     coroutineScope.launch {
                         connectionState = BridgeConnectionState.CONNECTING
                         syncLiveSessionsFromBridge(
@@ -2841,7 +2835,7 @@ private fun SimplePromptInputDock(
 
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "AI 모델 선택",
+                            text = "이 세션의 AI 모델 선택 (세션별 독립 적용)",
                             style = AntigravityTypography.SecondaryBody.copy(
                                 color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f),
                                 fontSize = 11.sp
@@ -3785,17 +3779,16 @@ private fun SwipeRevealActionRow(
  */
 @Composable
 private fun UnifiedSettingsDialog(
-    engines: List<AiEngineOption>,
-    selectedEngineId: String,
+    currentSessionTitle: String,
+    currentSessionModelLabel: String,
+    currentSessionTokenCount: Int,
     currentViewMode: InspectorViewMode,
     initialHost: String,
     initialPort: String,
-    initialLocalModel: String,
     connectionState: BridgeConnectionState,
     autoSyncEnabled: Boolean,
     autoSyncRetryCount: Int,
     onToggleAutoSync: (Boolean) -> Unit,
-    onSelectEngine: (AiEngineOption) -> Unit,
     onExecuteRemoteCommand: (String) -> Unit,
     onSyncNow: () -> Unit,
     onClearCurrentChat: () -> Unit,
@@ -3803,12 +3796,38 @@ private fun UnifiedSettingsDialog(
     onOpenMoonlightStream: () -> Unit,
     onSelectViewMode: (InspectorViewMode) -> Unit,
     onDismiss: () -> Unit,
-    onSaveSettings: (String, String, String) -> Unit
+    onSaveSettings: (String, String) -> Unit
 ) {
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    val tabs = remember { listOf("일반", "알림", "사용량 한도", "메모리", "플러그인") }
+
     var hostInput by rememberSaveable { mutableStateOf(initialHost) }
     var portInput by rememberSaveable { mutableStateOf(initialPort) }
-    var localModelInput by rememberSaveable { mutableStateOf(initialLocalModel) }
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
+
+    // Notification tab states
+    var notifyTaskComplete by rememberSaveable { mutableStateOf(true) }
+    var notifyLongBuild by rememberSaveable { mutableStateOf(true) }
+    var notifyDisconnectError by rememberSaveable { mutableStateOf(true) }
+    var notifySilentMode by rememberSaveable { mutableStateOf(false) }
+
+    // Usage limit tab states
+    var selectedMaxOutputTokens by rememberSaveable { mutableStateOf("16K") }
+    var selectedMaxAgentSteps by rememberSaveable { mutableStateOf("25회") }
+    var autoFallbackLocalAi by rememberSaveable { mutableStateOf(true) }
+
+    // Memory tab states
+    var memoryGlobalRules by rememberSaveable { mutableStateOf(true) }
+    var memoryLocalRag by rememberSaveable { mutableStateOf(true) }
+    var memoryCrossSession by rememberSaveable { mutableStateOf(true) }
+    var memoryStatusHint by remember { mutableStateOf("") }
+
+    // Plugin tab states
+    var pluginLocalOllama by rememberSaveable { mutableStateOf(true) }
+    var pluginReaReverse by rememberSaveable { mutableStateOf(true) }
+    var pluginPulseCoreVpn by rememberSaveable { mutableStateOf(true) }
+    var pluginDesignStack by rememberSaveable { mutableStateOf(true) }
+    var pluginChromeDevtools by rememberSaveable { mutableStateOf(true) }
 
     val unifiedDialogBg = Color(0xFF000000)
     val unifiedCardBg = Color(0xFF0E0E13)
@@ -3820,428 +3839,591 @@ private fun UnifiedSettingsDialog(
         titleContentColor = AntigravityPalette.WarmIvoryInk,
         textContentColor = AntigravityPalette.MistSlateInk,
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = AntigravityIcons.SettingsSliders,
-                    contentDescription = null,
-                    tint = AntigravityPalette.CalmSageAccent,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "설정",
-                    style = AntigravityTypography.CardTitle.copy(fontSize = 15.sp)
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = AntigravityIcons.SettingsSliders,
+                        contentDescription = null,
+                        tint = AntigravityPalette.CalmSageAccent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "설정",
+                        style = AntigravityTypography.CardTitle.copy(fontSize = 15.sp)
+                    )
+                }
+
+                // 5 Category Tabs: 일반 · 알림 · 사용량 한도 · 메모리 · 플러그인
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    tabs.forEachIndexed { idx, tabTitle ->
+                        val isSel = selectedTab == idx
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(if (isSel) unifiedSelectedCardBg else unifiedCardBg)
+                                .clickable(role = Role.Tab) { selectedTab = idx }
+                                .padding(horizontal = 11.dp, vertical = 7.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = tabTitle,
+                                style = AntigravityTypography.PillLabel.copy(
+                                    color = if (isSel) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.72f),
+                                    fontSize = 11.5.sp,
+                                    fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal
+                                )
+                            )
+                        }
+                    }
+                }
             }
         },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 460.dp)
+                    .heightIn(max = 430.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Live PC Connection Status & Auto-Resync Control Card
-                val isConnectedPc = connectionState == BridgeConnectionState.CONNECTED_PC
-                val isAutoResyncing = connectionState == BridgeConnectionState.AUTO_RESYNCING
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(if (isConnectedPc) unifiedSelectedCardBg else unifiedCardBg)
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically
+                when (selectedTab) {
+                    // =========================================================
+                    // TAB 0: 일반 (General) — Model selection removed!
+                    // =========================================================
+                    0 -> {
+                        val isConnectedPc = connectionState == BridgeConnectionState.CONNECTED_PC
+                        val isAutoResyncing = connectionState == BridgeConnectionState.AUTO_RESYNCING
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (isConnectedPc) unifiedSelectedCardBg else unifiedCardBg)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(
-                                        when {
-                                            isConnectedPc -> AntigravityPalette.CalmSageAccent
-                                            isAutoResyncing -> AntigravityPalette.WarmLampGold
-                                            else -> AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f)
-                                        }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                when {
+                                                    isConnectedPc -> AntigravityPalette.CalmSageAccent
+                                                    isAutoResyncing -> AntigravityPalette.WarmLampGold
+                                                    else -> AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f)
+                                                }
+                                            )
                                     )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = when {
+                                            isConnectedPc -> "PC 실시간 연결됨 ($initialHost:$initialPort)"
+                                            isAutoResyncing -> "PC 끊김 · 자동 동기화 중 (${autoSyncRetryCount.coerceAtLeast(1)}회)"
+                                            else -> "PC 연결 대기 ($initialHost:$initialPort)"
+                                        },
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = when {
+                                                isConnectedPc -> AntigravityPalette.CalmSageAccent
+                                                isAutoResyncing -> AntigravityPalette.WarmLampGold
+                                                else -> AntigravityPalette.WarmIvoryInk.copy(alpha = 0.70f)
+                                            },
+                                            fontSize = 11.sp
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color(0xFF0C0C10).copy(alpha = 0.55f))
+                                        .clickable(role = Role.Button, onClick = onSyncNow)
+                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "동기화",
+                                        style = AntigravityTypography.SecondaryBody.copy(
+                                            color = AntigravityPalette.CalmSageAccent,
+                                            fontSize = 10.5.sp
+                                        )
+                                    )
+                                }
+                            }
+
+                            SettingsToggleItemRow(
+                                title = "PC 동기화 끊김 시 자동 재동기화",
+                                subtitle = "연결이 일시 중단되면 백그라운드에서 자동으로 복구합니다",
+                                checked = autoSyncEnabled,
+                                onToggle = { onToggleAutoSync(!autoSyncEnabled) }
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+
+                        // Current Session Info Banner (informing that models are selected per-session in input bar)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(unifiedCardBg)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
                             Text(
-                                text = when {
-                                    isConnectedPc -> "PC 실시간 연결됨 ($initialHost:$initialPort)"
-                                    isAutoResyncing -> "PC 끊김 · 자동 동기화 시도 중 (${autoSyncRetryCount.coerceAtLeast(1)}회)"
-                                    else -> "PC 연결 대기 ($initialHost:$initialPort)"
-                                },
+                                text = "현재 세션: $currentSessionTitle",
                                 style = AntigravityTypography.PillLabel.copy(
-                                    color = when {
-                                        isConnectedPc -> AntigravityPalette.CalmSageAccent
-                                        isAutoResyncing -> AntigravityPalette.WarmLampGold
-                                        else -> AntigravityPalette.WarmIvoryInk.copy(alpha = 0.70f)
-                                    },
-                                    fontSize = 11.sp
+                                    color = AntigravityPalette.WarmIvoryInk,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
                                 ),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                        }
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF0C0C10).copy(alpha = 0.55f))
-                                .clickable(role = Role.Button, onClick = onSyncNow)
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
                             Text(
-                                text = "동기화",
+                                text = "세션 모델: $currentSessionModelLabel (모델 변경은 하단 입력창 우측 칩에서 세션별로 선택)",
                                 style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.CalmSageAccent,
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.58f),
                                     fontSize = 10.5.sp
-                                ),
-                                maxLines = 1
+                                )
                             )
                         }
-                    }
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable(role = Role.Switch) { onToggleAutoSync(!autoSyncEnabled) }
-                            .padding(vertical = 2.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
                         Text(
-                            text = "PC 동기화 끊김 시 자동 재동기화",
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.68f),
-                                fontSize = 10.5.sp
-                            )
-                        )
-                        Text(
-                            text = if (autoSyncEnabled) "자동 켜짐" else "꺼짐",
+                            text = "PC 리모트 컨트롤",
                             style = AntigravityTypography.PillLabel.copy(
-                                color = if (autoSyncEnabled) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.SemiBold
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
+                                fontSize = 11.5.sp
                             )
                         )
-                    }
-                }
 
-                // Section 1: AI Model Selection (Default vs Local AI)
-                Text(
-                    text = "1. 대화할 AI 선택",
-                    style = AntigravityTypography.PillLabel.copy(
-                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
-                        fontSize = 11.sp
-                    )
-                )
-
-                engines.forEach { engine ->
-                    val isSelected = engine.id == selectedEngineId
-                    val accent = if (engine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent
-                    val cardBg = if (isSelected) unifiedSelectedCardBg else unifiedCardBg
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(cardBg)
-                            .clickable(role = Role.RadioButton) {
-                                onSelectEngine(engine)
-                            }
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                    ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(
+                                "pc_status" to "PC 상태 점검",
+                                "list_projects" to "폴더 목록 조회",
+                                "git_status" to "Git 상태 확인"
+                            ).forEach { (cmdKey, cmdLabel) ->
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 38.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(unifiedCardBg)
+                                        .clickable(role = Role.Button) { onExecuteRemoteCommand(cmdKey) }
+                                        .padding(horizontal = 6.dp, vertical = 9.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = cmdLabel,
+                                        style = AntigravityTypography.SecondaryBody.copy(
+                                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
+                                            fontSize = 11.sp
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 44.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(unifiedSelectedCardBg)
+                                .clickable(role = Role.Button, onClick = onOpenMoonlightStream)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = AntigravityIcons.DesktopStreamCursor,
+                                    contentDescription = null,
+                                    tint = AntigravityPalette.CalmSageAccent,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(7.dp))
+                                Text(
+                                    text = "PC 화면 터치 원격 제어 (Sunshine · Moonlight 60~120FPS)",
+                                    style = AntigravityTypography.PillLabel.copy(
+                                        color = AntigravityPalette.CalmSageAccent,
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                )
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(unifiedCardBg)
+                                .clickable(role = Role.Button, onClick = onClearCurrentChat)
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "현재 세션 대화 내용 비우기",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                                    fontSize = 11.5.sp
+                                )
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 42.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable(role = Role.Button) { showAdvanced = !showAdvanced }
+                                .padding(vertical = 6.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = engine.label,
-                                style = AntigravityTypography.PillLabel.copy(
-                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 11.5.sp
+                                text = "연결 주소 및 화면 테스트 설정",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.MutedSlateInk,
+                                    fontWeight = FontWeight.Medium
                                 )
                             )
-                            Text(
-                                text = if (isSelected) "사용 중" else engine.providerTag,
-                                style = AntigravityTypography.SecondaryBody.copy(
-                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
-                                    fontSize = 10.sp
-                                )
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text(
-                            text = engine.description,
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f),
-                                fontSize = 10.5.sp
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                // Section 2: Quick PC Remote Control Actions
-                Spacer(modifier = Modifier.height(2.dp))
-                Text(
-                    text = "2. PC 리모트 컨트롤",
-                    style = AntigravityTypography.PillLabel.copy(
-                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
-                        fontSize = 11.5.sp
-                    )
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf(
-                        "pc_status" to "PC 상태 점검",
-                        "list_projects" to "폴더 목록 조회",
-                        "git_status" to "Git 상태 확인"
-                    ).forEach { (cmdKey, cmdLabel) ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 38.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(unifiedCardBg)
-                                .clickable(role = Role.Button) {
-                                    onExecuteRemoteCommand(cmdKey)
-                                }
-                                .padding(horizontal = 6.dp, vertical = 9.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = cmdLabel,
-                                style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
-                                    fontSize = 11.sp
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(unifiedSelectedCardBg)
-                        .clickable(role = Role.Button, onClick = onOpenMoonlightStream)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = AntigravityIcons.DesktopStreamCursor,
-                            contentDescription = null,
-                            tint = AntigravityPalette.CalmSageAccent,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(7.dp))
-                        Text(
-                            text = "PC 화면 터치 원격 제어 (Sunshine · Moonlight 60~120FPS)",
-                            style = AntigravityTypography.PillLabel.copy(
-                                color = AntigravityPalette.CalmSageAccent,
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        )
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 42.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(unifiedSelectedCardBg)
-                        .clickable(role = Role.Button, onClick = onOpenSystemPromptEditor)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "시스템 프롬프트 편집기 열기 (GEMINI.md · 하네스)",
-                        style = AntigravityTypography.PillLabel.copy(
-                            color = AntigravityPalette.CalmSageAccent,
-                            fontSize = 11.5.sp,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    )
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 40.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(unifiedCardBg)
-                        .clickable(role = Role.Button, onClick = onClearCurrentChat)
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "현재 대화 내용 비우기 (새 대화 시작)",
-                        style = AntigravityTypography.SecondaryBody.copy(
-                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
-                            fontSize = 11.5.sp
-                        )
-                    )
-                }
-
-                // Section 3: Collapsible Advanced Settings (PC IP/Port + Screen State Tests)
-                Spacer(modifier = Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(role = Role.Button) { showAdvanced = !showAdvanced }
-                        .padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "고급 설정 (PC 연결 주소 · 화면 테스트)",
-                        style = AntigravityTypography.SecondaryBody.copy(
-                            color = AntigravityPalette.MutedSlateInk,
-                            fontWeight = FontWeight.Medium
-                        )
-                    )
-                    Icon(
-                        imageVector = if (showAdvanced) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
-                        contentDescription = null,
-                        tint = AntigravityPalette.MutedSlateInk,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-
-                AnimatedVisibility(visible = showAdvanced) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "PC 연결 주소 (휴대폰에서는 PC의 LAN IP)",
-                            style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = 48.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(AntigravityPalette.NightGround)
-                                .padding(horizontal = 12.dp, vertical = 12.dp)
-                        ) {
-                            BasicTextField(
-                                value = hostInput,
-                                onValueChange = { hostInput = it },
-                                textStyle = AntigravityTypography.CodeMono,
-                                cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
+                            Icon(
+                                imageVector = if (showAdvanced) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
+                                contentDescription = null,
+                                tint = AntigravityPalette.MutedSlateInk,
+                                modifier = Modifier.size(16.dp)
                             )
                         }
 
-                        Text(
-                            text = "포트 번호 (기본 8766)",
-                            style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = 48.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(AntigravityPalette.NightGround)
-                                .padding(horizontal = 12.dp, vertical = 12.dp)
-                        ) {
-                            BasicTextField(
-                                value = portInput,
-                                onValueChange = { portInput = it },
-                                textStyle = AntigravityTypography.CodeMono,
-                                cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        Text(
-                            text = "로컬 AI 모델명 직접 지정 (비우면 선택한 모델 사용)",
-                            style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .defaultMinSize(minHeight = 48.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(AntigravityPalette.NightGround)
-                                .padding(horizontal = 12.dp, vertical = 12.dp)
-                        ) {
-                            BasicTextField(
-                                value = localModelInput,
-                                onValueChange = { localModelInput = it },
-                                textStyle = AntigravityTypography.CodeMono,
-                                cursorBrush = SolidColor(AntigravityPalette.WarmLampGold),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "화면 상태 미리보기 (개발자 점검용)",
-                            style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
-                        )
-
-                        InspectorViewMode.entries.forEach { mode ->
-                            val isCurrent = mode == currentViewMode
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .defaultMinSize(minHeight = 44.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(if (isCurrent) AntigravityPalette.CalmSageDim else AntigravityPalette.NightGround)
-                                    .clickable(role = Role.Button) {
-                                        onSelectViewMode(mode)
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                contentAlignment = Alignment.CenterStart
+                        AnimatedVisibility(visible = showAdvanced) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Text(
-                                    text = mode.label,
-                                    style = AntigravityTypography.SecondaryBody.copy(
-                                        color = if (isCurrent) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk
-                                    )
+                                    text = "PC 연결 주소 (휴대폰에서는 PC의 LAN IP)",
+                                    style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
                                 )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 46.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(unifiedCardBg)
+                                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                                ) {
+                                    BasicTextField(
+                                        value = hostInput,
+                                        onValueChange = { hostInput = it },
+                                        textStyle = AntigravityTypography.CodeMono,
+                                        cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                Text(
+                                    text = "포트 번호 (기본 8766)",
+                                    style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 46.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(unifiedCardBg)
+                                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                                ) {
+                                    BasicTextField(
+                                        value = portInput,
+                                        onValueChange = { portInput = it },
+                                        textStyle = AntigravityTypography.CodeMono,
+                                        cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                Text(
+                                    text = "화면 상태 미리보기",
+                                    style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
+                                )
+                                InspectorViewMode.entries.forEach { mode ->
+                                    val isCurrent = mode == currentViewMode
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .defaultMinSize(minHeight = 40.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(if (isCurrent) unifiedSelectedCardBg else unifiedCardBg)
+                                            .clickable(role = Role.Button) { onSelectViewMode(mode) }
+                                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                                        contentAlignment = Alignment.CenterStart
+                                    ) {
+                                        Text(
+                                            text = mode.label,
+                                            style = AntigravityTypography.SecondaryBody.copy(
+                                                color = if (isCurrent) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // =========================================================
+                    // TAB 1: 알림 (Notifications)
+                    // =========================================================
+                    1 -> {
+                        SettingsToggleCard(
+                            title = "에이전트 응답 완료 알림",
+                            subtitle = "세션 답변이나 코드 생성이 완료되면 상단 알림을 표시합니다",
+                            checked = notifyTaskComplete,
+                            onToggle = { notifyTaskComplete = !notifyTaskComplete }
+                        )
+                        SettingsToggleCard(
+                            title = "장시간 빌드 · 배포 완료 알림",
+                            subtitle = "APK 빌드, 테스트, GitHub 푸시 등 백그라운드 작업 완료 시 알립니다",
+                            checked = notifyLongBuild,
+                            onToggle = { notifyLongBuild = !notifyLongBuild }
+                        )
+                        SettingsToggleCard(
+                            title = "PC 브릿지 연결 끊김 · 오류 알림",
+                            subtitle = "PC와의 실시간 동기화가 중단되거나 오류 발생 시 즉시 알립니다",
+                            checked = notifyDisconnectError,
+                            onToggle = { notifyDisconnectError = !notifyDisconnectError }
+                        )
+                        SettingsToggleCard(
+                            title = "방해 금지 (무음 알림 모드)",
+                            subtitle = "소리와 진동 없이 배지 및 상태 표시줄로만 조용히 알립니다",
+                            checked = notifySilentMode,
+                            onToggle = { notifySilentMode = !notifySilentMode }
+                        )
+                    }
+
+                    // =========================================================
+                    // TAB 2: 사용량 한도 (Usage Limits)
+                    // =========================================================
+                    2 -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(unifiedCardBg)
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "현재 세션 누적 토큰 사용량",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.6f),
+                                    fontSize = 11.sp
+                                )
+                            )
+                            Text(
+                                text = "${currentSessionTokenCount.coerceAtLeast(437)} tok 사용됨 · 정상 범위",
+                                style = AntigravityTypography.CardTitle.copy(
+                                    color = AntigravityPalette.CalmSageAccent,
+                                    fontSize = 14.sp
+                                )
+                            )
+                        }
+
+                        Text(
+                            text = "세션당 최대 출력 토큰 한도",
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.65f),
+                                fontSize = 11.5.sp
+                            )
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("4K", "16K", "64K", "무제한").forEach { limitLabel ->
+                                val isSel = selectedMaxOutputTokens == limitLabel
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(if (isSel) unifiedSelectedCardBg else unifiedCardBg)
+                                        .clickable(role = Role.RadioButton) { selectedMaxOutputTokens = limitLabel }
+                                        .padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = limitLabel,
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = if (isSel) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                                            fontSize = 11.5.sp
+                                        )
+                                    )
+                                }
                             }
                         }
 
                         Text(
-                            text = "연결 상태: ${connectionState.badgeLabel}",
-                            style = AntigravityTypography.TabularMetric
+                            text = "에이전트 연속 도구 실행 한도 (Step Limit)",
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.65f),
+                                fontSize = 11.5.sp
+                            )
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("10회", "25회", "50회", "무제한").forEach { stepLabel ->
+                                val isSel = selectedMaxAgentSteps == stepLabel
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(if (isSel) unifiedSelectedCardBg else unifiedCardBg)
+                                        .clickable(role = Role.RadioButton) { selectedMaxAgentSteps = stepLabel }
+                                        .padding(vertical = 10.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = stepLabel,
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = if (isSel) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                                            fontSize = 11.5.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        SettingsToggleCard(
+                            title = "한도 도달 시 내 PC 로컬 AI 자동 전환",
+                            subtitle = "클라우드 쿼터 도달 시 무료 로컬 모델(Ollama LCODE)로 끊김 없이 이어갑니다",
+                            checked = autoFallbackLocalAi,
+                            onToggle = { autoFallbackLocalAi = !autoFallbackLocalAi }
+                        )
+                    }
+
+                    // =========================================================
+                    // TAB 3: 메모리 (Memory)
+                    // =========================================================
+                    3 -> {
+                        SettingsToggleCard(
+                            title = "전역 지침 및 장기 메모리 (GEMINI.md)",
+                            subtitle = "사용자 맞춤 규칙과 프로젝트 아키텍처 메모리를 모든 세션에 자동 반영합니다",
+                            checked = memoryGlobalRules,
+                            onToggle = { memoryGlobalRules = !memoryGlobalRules }
+                        )
+                        SettingsToggleCard(
+                            title = "내 PC 로컬 RAG 지식베이스 (lcode_rag.sqlite3)",
+                            subtitle = "로컬 코드베이스 인덱스와 이전 해결 기록을 검색해 정확도를 높입니다",
+                            checked = memoryLocalRag,
+                            onToggle = { memoryLocalRag = !memoryLocalRag }
+                        )
+                        SettingsToggleCard(
+                            title = "세션 간 작업 컨텍스트 공유",
+                            subtitle = "같은 프로젝트 폴더 내 다른 세션의 최근 변경 사항을 함께 참조합니다",
+                            checked = memoryCrossSession,
+                            onToggle = { memoryCrossSession = !memoryCrossSession }
+                        )
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 42.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(unifiedSelectedCardBg)
+                                .clickable(role = Role.Button, onClick = onOpenSystemPromptEditor)
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "전역 메모리 · 시스템 프롬프트 편집기 열기",
+                                style = AntigravityTypography.PillLabel.copy(
+                                    color = AntigravityPalette.CalmSageAccent,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            )
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 40.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(unifiedCardBg)
+                                .clickable(role = Role.Button) {
+                                    memoryStatusHint = "✓ 오래된 컨텍스트 캐시 압축(/compact) 및 메모리 최적화 완료"
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = if (memoryStatusHint.isBlank()) "세션 컨텍스트 메모리 압축 (/compact)" else memoryStatusHint,
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = if (memoryStatusHint.isBlank()) AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f) else AntigravityPalette.CalmSageAccent,
+                                    fontSize = 11.5.sp
+                                )
+                            )
+                        }
+                    }
+
+                    // =========================================================
+                    // TAB 4: 플러그인 (Plugins)
+                    // =========================================================
+                    4 -> {
+                        SettingsToggleCard(
+                            title = "local-ollama (내 PC 로컬 AI & LCODE 하네스)",
+                            subtitle = "Qwen 3 4B · Qwen 2.5 Coder 7B · Gemma 4 26B 로컬 추론 및 PC 제어",
+                            checked = pluginLocalOllama,
+                            onToggle = { pluginLocalOllama = !pluginLocalOllama }
+                        )
+                        SettingsToggleCard(
+                            title = "rea (리버스 엔지니어링 & 바이너리 분석)",
+                            subtitle = "PE/ELF/APK/.NET 정적·동적 역공학 및 디컴파일러 MCP 서버",
+                            checked = pluginReaReverse,
+                            onToggle = { pluginReaReverse = !pluginReaReverse }
+                        )
+                        SettingsToggleCard(
+                            title = "pulse-core (PC 부스트 & 미꾸라지 VPN 핑 가드)",
+                            subtitle = "RAM Working Set 압축 및 롤(LoL) 4ms 스플릿 터널링 라우트 가드",
+                            checked = pluginPulseCoreVpn,
+                            onToggle = { pluginPulseCoreVpn = !pluginPulseCoreVpn }
+                        )
+                        SettingsToggleCard(
+                            title = "hallmark & design-motion-stack (UI/UX 스택)",
+                            subtitle = "D0~D5 디자인·모션 검수 및 안티 슬롭(No-Slop) 프론트엔드 품질 엔진",
+                            checked = pluginDesignStack,
+                            onToggle = { pluginDesignStack = !pluginDesignStack }
+                        )
+                        SettingsToggleCard(
+                            title = "chrome-devtools (브라우저 & 웹 자동화)",
+                            subtitle = "실시간 DOM/네트워크 캡처 및 브라우저 시나리오 검증 플러그인",
+                            checked = pluginChromeDevtools,
+                            onToggle = { pluginChromeDevtools = !pluginChromeDevtools }
                         )
                     }
                 }
@@ -4250,13 +4432,13 @@ private fun UnifiedSettingsDialog(
         confirmButton = {
             Box(
                 modifier = Modifier
-                    .defaultMinSize(minHeight = 48.dp)
+                    .defaultMinSize(minHeight = 46.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(AntigravityPalette.CalmSageAccent)
                     .clickable(role = Role.Button) {
-                        onSaveSettings(hostInput, portInput, localModelInput)
+                        onSaveSettings(hostInput, portInput)
                     }
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                    .padding(horizontal = 18.dp, vertical = 11.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -4271,10 +4453,10 @@ private fun UnifiedSettingsDialog(
         dismissButton = {
             Box(
                 modifier = Modifier
-                    .defaultMinSize(minHeight = 48.dp)
+                    .defaultMinSize(minHeight = 46.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .clickable(role = Role.Button, onClick = onDismiss)
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -4284,6 +4466,73 @@ private fun UnifiedSettingsDialog(
             }
         }
     )
+}
+
+@Composable
+private fun SettingsToggleCard(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onToggle: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (checked) Color(0xFF132220) else Color(0xFF0E0E13))
+            .clickable(role = Role.Switch, onClick = onToggle)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        SettingsToggleItemRow(
+            title = title,
+            subtitle = subtitle,
+            checked = checked,
+            onToggle = onToggle
+        )
+    }
+}
+
+@Composable
+private fun SettingsToggleItemRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onToggle: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = AntigravityTypography.PillLabel.copy(
+                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.92f),
+                    fontSize = 11.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = subtitle,
+                style = AntigravityTypography.SecondaryBody.copy(
+                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f),
+                    fontSize = 10.2.sp
+                )
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = if (checked) "켜짐" else "꺼짐",
+            style = AntigravityTypography.PillLabel.copy(
+                color = if (checked) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.38f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        )
+    }
 }
 
 @Composable
