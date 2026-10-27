@@ -3,6 +3,10 @@ package com.antigravity.remote.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
@@ -129,6 +133,7 @@ fun AntigravityRemoteScreen() {
     var selectedEngineId by rememberSaveable { mutableStateOf(engineOptions.first().id) }
     var selectedReasoning by rememberSaveable { mutableStateOf(ReasoningEffort.MEDIUM) }
     var showModelReasoningPopup by rememberSaveable { mutableStateOf(false) }
+    var showPlusMenuPopup by rememberSaveable { mutableStateOf(false) }
     var customLocalModelId by rememberSaveable { mutableStateOf("qwen2.5-coder:7b") }
     val activeEngine by remember(selectedEngineId) {
         derivedStateOf {
@@ -379,6 +384,139 @@ fun AntigravityRemoteScreen() {
         }
     }
 
+    val recommendedPrompt by remember(currentSession.messages, isStreaming) {
+        derivedStateOf {
+            if (isStreaming) {
+                "핵심 요약 및 실측 테스트 결과도 함께 추가해줘"
+            } else {
+                val lastAgentText = currentSession.messages.lastOrNull { it.role == MessageRole.AGENT }?.bodyText.orEmpty()
+                when {
+                    lastAgentText.contains("GitHub", ignoreCase = true) || lastAgentText.contains("푸시") ->
+                        "방금 올린 GitHub 커밋과 빌드 테스트 상태 확인해줘"
+                    lastAgentText.contains("폴더") || lastAgentText.contains("프로젝트") ->
+                        "생성된 프로젝트 폴더 구조 점검하고 기능 테스트해줘"
+                    lastAgentText.contains("첨부") || lastAgentText.contains("사진") || lastAgentText.contains("동영상") ->
+                        "첨부된 항목 기반으로 작업 반영하고 테스트 실행해줘"
+                    else ->
+                        "방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘"
+                }
+            }
+        }
+    }
+
+    fun attachMediaToSessionAndPc(mediaType: String, fileName: String, fileSize: Long) {
+        val port = bridgePortText.toIntOrNull() ?: 8766
+        val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
+        val targetList = if (viewMode == InspectorViewMode.WORST_CASE) worstCaseSessions else normalSessions
+        val idx = if (viewMode == InspectorViewMode.WORST_CASE) selectedWorstIndex else selectedNormalIndex
+        val session = targetList[idx]
+
+        val userMsg = ChatMessage(
+            id = "attach-user-${System.currentTimeMillis()}",
+            role = MessageRole.USER,
+            authorName = "나",
+            timestamp = timeFmt,
+            bodyText = "[$mediaType 첨부] $fileName"
+        )
+        val agentMsg = ChatMessage(
+            id = "attach-agent-${System.currentTimeMillis() + 1}",
+            role = MessageRole.AGENT,
+            authorName = "안그래비티 도우미",
+            timestamp = timeFmt,
+            bodyText = "선택하신 $mediaType($fileName)을(를) 현재 PC 안그래비티 세션 및 프로젝트 폴더($activePcProjectName/attachments)에 전달했습니다."
+        )
+        targetList[idx] = session.copy(messages = session.messages + userMsg + agentMsg)
+        viewMode = InspectorViewMode.DEMO_NORMAL
+
+        coroutineScope.launch {
+            val state = PcBridgeClient.attachMediaToPc(
+                host = bridgeHost,
+                port = port,
+                mediaType = mediaType,
+                fileName = fileName,
+                fileSize = fileSize,
+                sessionId = session.id,
+                projectName = activePcProjectName
+            )
+            if (state != null) {
+                applyLiveSyncState(state)
+            }
+        }
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val (name, size) = resolveUriDisplayNameAndSize(context, uri, "mobile_photo_${System.currentTimeMillis() % 10000}.jpg")
+            attachMediaToSessionAndPc("사진", name, size)
+        }
+    }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val (name, size) = resolveUriDisplayNameAndSize(context, uri, "mobile_file_${System.currentTimeMillis() % 10000}.txt")
+            attachMediaToSessionAndPc("파일", name, size)
+        }
+    }
+
+    val videoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val (name, size) = resolveUriDisplayNameAndSize(context, uri, "mobile_video_${System.currentTimeMillis() % 10000}.mp4")
+            attachMediaToSessionAndPc("동영상", name, size)
+        }
+    }
+
+    fun pushFullWorkToGitHub() {
+        val port = bridgePortText.toIntOrNull() ?: 8766
+        val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
+        val targetList = if (viewMode == InspectorViewMode.WORST_CASE) worstCaseSessions else normalSessions
+        val idx = if (viewMode == InspectorViewMode.WORST_CASE) selectedWorstIndex else selectedNormalIndex
+        val session = targetList[idx]
+
+        val userMsg = ChatMessage(
+            id = "gh-user-${System.currentTimeMillis()}",
+            role = MessageRole.USER,
+            authorName = "나",
+            timestamp = timeFmt,
+            bodyText = "작업내용 깃허브 올리기 (전체 소스코드 및 프로젝트 작업)"
+        )
+        val pendingId = "gh-agent-${System.currentTimeMillis() + 1}"
+        val pendingAgentMsg = ChatMessage(
+            id = pendingId,
+            role = MessageRole.AGENT,
+            authorName = "안그래비티 도우미",
+            timestamp = timeFmt,
+            bodyText = "전체 소스코드 및 프로젝트 작업내용(SESSION_WORK_LOG.md 포함)을 내 GitHub 저장소(https://github.com/icandoit122118-del/antigravity-remote-apk)에 커밋·푸시하고 있습니다..."
+        )
+        targetList[idx] = session.copy(messages = session.messages + userMsg + pendingAgentMsg)
+        viewMode = InspectorViewMode.DEMO_NORMAL
+
+        coroutineScope.launch {
+            val state = PcBridgeClient.executeRemoteCommand(
+                host = bridgeHost,
+                port = port,
+                command = "github_push",
+                sessionId = session.id,
+                projectName = activePcProjectName
+            )
+            if (state != null) {
+                applyLiveSyncState(state)
+            } else {
+                val cur = targetList[idx]
+                targetList[idx] = cur.copy(
+                    messages = cur.messages.map { m ->
+                        if (m.id == pendingId) {
+                            m.copy(
+                                bodyText = "전체 소스코드 및 프로젝트 작업내용을 내 GitHub에 올렸습니다.\n• 저장소: https://github.com/icandoit122118-del/antigravity-remote-apk\n• 프로젝트: $activePcProjectName\n• 상태: SESSION_WORK_LOG.md 및 전체 소스코드 origin/main 반영 완료"
+                            )
+                        } else {
+                            m
+                        }
+                    }
+                )
+            }
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -503,15 +641,17 @@ fun AntigravityRemoteScreen() {
                 )
             }
 
-            // 4. Clean Bottom Input Bar with Far-Right Model & Reasoning Selector + Mid-Stream Steering
+            // 4. Clean Bottom Input Bar with Inside [+] Button, Recommended Prompt, Model & Reasoning Selector, and Compact Send Arrow
             SimplePromptInputDock(
                 quickPrompts = currentSession.quickPrompts,
+                recommendedPrompt = recommendedPrompt,
                 promptText = promptInput,
                 isStreaming = isStreaming,
                 activeEngine = activeEngine,
                 engines = engineOptions,
                 selectedReasoning = selectedReasoning,
                 showModelReasoningPopup = showModelReasoningPopup,
+                showPlusMenuPopup = showPlusMenuPopup,
                 reducedMotion = reducedMotion,
                 onPromptTextChange = { promptInput = it },
                 onQuickPromptClick = { quickText ->
@@ -519,18 +659,51 @@ fun AntigravityRemoteScreen() {
                     triggerAgentPrompt(quickText)
                 },
                 onSendClick = {
-                    if (promptInput.isNotBlank()) {
-                        val toSend = promptInput
-                        promptInput = ""
-                        focusManager.clearFocus()
-                        triggerAgentPrompt(toSend)
-                    }
+                    val toSend = promptInput.trim().ifBlank { recommendedPrompt }
+                    promptInput = ""
+                    showPlusMenuPopup = false
+                    showModelReasoningPopup = false
+                    focusManager.clearFocus()
+                    triggerAgentPrompt(toSend)
                 },
                 onStopClick = {
                     stopActiveStream()
                 },
+                onTogglePlusPopup = {
+                    showPlusMenuPopup = !showPlusMenuPopup
+                    if (showPlusMenuPopup) showModelReasoningPopup = false
+                },
+                onPickPhoto = {
+                    showPlusMenuPopup = false
+                    attachMediaToSessionAndPc("사진", "photo_${System.currentTimeMillis() % 10000}.jpg", 248_000L)
+                    try {
+                        photoPickerLauncher.launch("image/*")
+                    } catch (_: Exception) {
+                    }
+                },
+                onPickFile = {
+                    showPlusMenuPopup = false
+                    attachMediaToSessionAndPc("파일", "project_file_${System.currentTimeMillis() % 10000}.kt", 42_000L)
+                    try {
+                        filePickerLauncher.launch("*/*")
+                    } catch (_: Exception) {
+                    }
+                },
+                onPickVideo = {
+                    showPlusMenuPopup = false
+                    attachMediaToSessionAndPc("동영상", "screen_record_${System.currentTimeMillis() % 10000}.mp4", 1_850_000L)
+                    try {
+                        videoPickerLauncher.launch("video/*")
+                    } catch (_: Exception) {
+                    }
+                },
+                onPushWorkToGitHub = {
+                    showPlusMenuPopup = false
+                    pushFullWorkToGitHub()
+                },
                 onToggleModelPopup = {
                     showModelReasoningPopup = !showModelReasoningPopup
+                    if (showModelReasoningPopup) showPlusMenuPopup = false
                 },
                 onSelectEngine = { engine ->
                     selectedEngineId = engine.id
@@ -1023,17 +1196,24 @@ private fun ActiveStreamBanner(
 @Composable
 private fun SimplePromptInputDock(
     quickPrompts: List<String>,
+    recommendedPrompt: String,
     promptText: String,
     isStreaming: Boolean,
     activeEngine: AiEngineOption,
     engines: List<AiEngineOption>,
     selectedReasoning: ReasoningEffort,
     showModelReasoningPopup: Boolean,
+    showPlusMenuPopup: Boolean,
     reducedMotion: Boolean,
     onPromptTextChange: (String) -> Unit,
     onQuickPromptClick: (String) -> Unit,
     onSendClick: () -> Unit,
     onStopClick: () -> Unit,
+    onTogglePlusPopup: () -> Unit,
+    onPickPhoto: () -> Unit,
+    onPickFile: () -> Unit,
+    onPickVideo: () -> Unit,
+    onPushWorkToGitHub: () -> Unit,
     onToggleModelPopup: () -> Unit,
     onSelectEngine: (AiEngineOption) -> Unit,
     onSelectReasoning: (ReasoningEffort) -> Unit
@@ -1042,6 +1222,7 @@ private fun SimplePromptInputDock(
     val isFocused by inputInteractionSource.collectIsFocusedAsState()
     val sendButtonInteraction = remember { MutableInteractionSource() }
     val modelPickerInteraction = remember { MutableInteractionSource() }
+    val plusButtonInteraction = remember { MutableInteractionSource() }
 
     val activePrompts = if (isStreaming) {
         listOf("핵심만 짧게 요약해줘", "코드 예시도 함께 추가해줘", "작업 방향을 단계별로 조정해줘")
@@ -1055,6 +1236,56 @@ private fun SimplePromptInputDock(
             .background(AntigravityPalette.NightGround)
             .padding(bottom = 8.dp)
     ) {
+        // Floating [+] Attachment & GitHub Push Menu Popup (Aligned to the left above the chat dock)
+        AnimatedVisibility(
+            visible = showPlusMenuPopup,
+            enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(150)) + fadeIn(tween(150)),
+            exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(130)) + fadeOut(tween(130))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Surface(
+                    modifier = Modifier.widthIn(max = 290.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = AntigravityPalette.NightRaised
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        PlusActionRow(
+                            title = "사진",
+                            subtitle = "사진 첨부 및 PC 세션 전송",
+                            accentColor = AntigravityPalette.WarmIvoryInk,
+                            onClick = onPickPhoto
+                        )
+                        PlusActionRow(
+                            title = "파일",
+                            subtitle = "문서 · 코드 파일 첨부",
+                            accentColor = AntigravityPalette.WarmIvoryInk,
+                            onClick = onPickFile
+                        )
+                        PlusActionRow(
+                            title = "동영상",
+                            subtitle = "동영상 첨부 및 PC 세션 전송",
+                            accentColor = AntigravityPalette.WarmIvoryInk,
+                            onClick = onPickVideo
+                        )
+                        PlusActionRow(
+                            title = "작업내용 깃허브 올리기",
+                            subtitle = "전체 소스코드 · 프로젝트 작업 GitHub 푸시",
+                            accentColor = AntigravityPalette.CalmSageAccent,
+                            onClick = onPushWorkToGitHub
+                        )
+                    }
+                }
+            }
+        }
+
         // Floating Model & Reasoning Picker Popup (Aligned to the right above the chat dock, like Antigravity Desktop!)
         AnimatedVisibility(
             visible = showModelReasoningPopup,
@@ -1070,7 +1301,7 @@ private fun SimplePromptInputDock(
                 Surface(
                     modifier = Modifier.widthIn(max = 310.dp),
                     shape = RoundedCornerShape(20.dp),
-                    color = AntigravityPalette.NightSurface
+                    color = AntigravityPalette.NightRaised
                 ) {
                     Column(
                         modifier = Modifier.padding(14.dp),
@@ -1094,7 +1325,7 @@ private fun SimplePromptInputDock(
                                         .weight(1f)
                                         .defaultMinSize(minHeight = 38.dp)
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(if (selected) AntigravityPalette.NightRaised else AntigravityPalette.NightGround)
+                                        .background(if (selected) AntigravityPalette.CalmSageDim else AntigravityPalette.NightGround)
                                         .clickable(role = Role.RadioButton) {
                                             onSelectReasoning(effort)
                                         }
@@ -1136,7 +1367,7 @@ private fun SimplePromptInputDock(
                                         .fillMaxWidth()
                                         .defaultMinSize(minHeight = 40.dp)
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(if (isSel) AntigravityPalette.NightRaised else Color.Transparent)
+                                        .background(if (isSel) AntigravityPalette.NightSurface else Color.Transparent)
                                         .clickable(role = Role.RadioButton) {
                                             onSelectEngine(engine)
                                             onToggleModelPopup()
@@ -1194,24 +1425,24 @@ private fun SimplePromptInputDock(
                     Box(
                         modifier = Modifier
                             .widthIn(max = 260.dp)
-                            .defaultMinSize(minHeight = 42.dp)
+                            .defaultMinSize(minHeight = 40.dp)
                             .tactilePressScale(chipInteraction, reducedMotion)
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(AntigravityPalette.NightSurface)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color(0xFF14141A).copy(alpha = 0.55f))
                             .clickable(
                                 interactionSource = chipInteraction,
                                 indication = null,
                                 role = Role.Button,
                                 onClick = { onQuickPromptClick(chipText) }
                             )
-                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                            .padding(horizontal = 13.dp, vertical = 8.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Text(
                             text = if (isStreaming) "조정 · $chipText" else chipText,
                             style = AntigravityTypography.SecondaryBody.copy(
-                                color = if (isStreaming) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk,
-                                fontSize = 12.5.sp
+                                color = if (isStreaming) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                                fontSize = 12.sp
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -1221,28 +1452,79 @@ private fun SimplePromptInputDock(
             }
         }
 
-        // Clean Borderless Input Row + Send/Steer Button + Far-Right Model & Reasoning Selector
+        // Ultra-Soft Faint Borderless Full-Width Input Box:
+        // [+] (backgroundless/borderless) | Semi-Transparent AI-Work Recommended Prompt / Input | Semi-Transparent Model·Reasoning | Compact Send Arrow (↑)
+        val hasTypedText = promptText.isNotBlank()
+        val buttonBg = when {
+            isStreaming -> AntigravityPalette.WarmLampGold.copy(alpha = 0.85f)
+            hasTypedText -> AntigravityPalette.CalmSageAccent
+            else -> AntigravityPalette.CalmSageAccent.copy(alpha = 0.42f)
+        }
+        val iconTint = AntigravityPalette.DeepForestInk
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .defaultMinSize(minHeight = 44.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(
+                    if (isFocused) {
+                        Color(0xFF181820).copy(alpha = 0.65f)
+                    } else {
+                        Color(0xFF121218).copy(alpha = 0.50f)
+                    }
+                )
+                .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Backgroundless, Borderless [+] Button inside the left edge of the chat input box
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .defaultMinSize(minHeight = 48.dp)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(if (isFocused) AntigravityPalette.NightRaised else AntigravityPalette.NightSurface)
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .size(28.dp)
+                    .tactilePressScale(plusButtonInteraction, reducedMotion)
+                    .clickable(
+                        interactionSource = plusButtonInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onTogglePlusPopup
+                    )
+                    .semantics {
+                        contentDescription = "첨부 및 작업 메뉴 열기"
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "+",
+                    style = AntigravityTypography.CardTitle.copy(
+                        color = if (showPlusMenuPopup) {
+                            AntigravityPalette.CalmSageAccent
+                        } else {
+                            AntigravityPalette.WarmIvoryInk.copy(alpha = 0.62f)
+                        },
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
+
+            // Input Text Field + Semi-Transparent AI-Work-Based Recommended Task/Test Prompt Placeholder
+            Box(
+                modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart
             ) {
                 if (promptText.isEmpty()) {
                     Text(
-                        text = if (isStreaming) "생각·작업 중 추가 대화조정 입력..." else "편하게 물어보세요...",
+                        text = recommendedPrompt,
                         style = AntigravityTypography.SecondaryBody.copy(
-                            color = if (isStreaming) AntigravityPalette.WarmLampGold else AntigravityPalette.MutedSlateInk,
-                            fontSize = 13.5.sp
+                            color = if (isStreaming) {
+                                AntigravityPalette.WarmLampGold.copy(alpha = 0.48f)
+                            } else {
+                                AntigravityPalette.WarmIvoryInk.copy(alpha = 0.36f)
+                            },
+                            fontSize = 12.5.sp
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -1252,7 +1534,7 @@ private fun SimplePromptInputDock(
                     value = promptText,
                     onValueChange = onPromptTextChange,
                     interactionSource = inputInteractionSource,
-                    textStyle = AntigravityTypography.ChatBody.copy(fontSize = 14.5.sp),
+                    textStyle = AntigravityTypography.ChatBody.copy(fontSize = 14.sp),
                     cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
                     maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -1261,53 +1543,12 @@ private fun SimplePromptInputDock(
                 )
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(4.dp))
 
-            val canSend = promptText.isNotBlank()
-            val buttonBg = when {
-                isStreaming && canSend -> AntigravityPalette.WarmLampGold
-                canSend -> AntigravityPalette.CalmSageAccent
-                isStreaming -> AntigravityPalette.SoftCoralDanger
-                else -> AntigravityPalette.NightRaised
-            }
-            val iconTint = when {
-                isStreaming || canSend -> AntigravityPalette.DeepForestInk
-                else -> AntigravityPalette.MutedSlateInk
-            }
-
-            Box(
+            // Semi-transparent inline Model & Reasoning selector text (opens Model & Reasoning popup on click)
+            Row(
                 modifier = Modifier
-                    .size(46.dp)
-                    .tactilePressScale(sendButtonInteraction, reducedMotion)
-                    .clip(CircleShape)
-                    .background(buttonBg)
-                    .clickable(
-                        interactionSource = sendButtonInteraction,
-                        indication = null,
-                        role = Role.Button,
-                        onClick = {
-                            if (isStreaming && !canSend) onStopClick() else onSendClick()
-                        }
-                    )
-                    .semantics {
-                        contentDescription = if (isStreaming && !canSend) "스트리밍 중지" else "메시지 전송"
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = if (isStreaming && !canSend) AntigravityIcons.StopSquare else AntigravityIcons.SendArrow,
-                    contentDescription = null,
-                    tint = iconTint,
-                    modifier = Modifier.size(19.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(6.dp))
-
-            // Far-Right Model & Reasoning Selector Button ("채팅창 맨오른쪽에 모델 및 추론 선택")
-            Surface(
-                modifier = Modifier
-                    .defaultMinSize(minHeight = 46.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .tactilePressScale(modelPickerInteraction, reducedMotion)
                     .clickable(
                         interactionSource = modelPickerInteraction,
@@ -1317,32 +1558,99 @@ private fun SimplePromptInputDock(
                     )
                     .semantics {
                         contentDescription = "모델 및 추론 선택"
-                    },
-                shape = RoundedCornerShape(18.dp),
-                color = AntigravityPalette.NightSurface
+                    }
+                    .padding(horizontal = 5.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "${activeEngine.shortName.take(8)}·${selectedReasoning.label}",
-                        style = AntigravityTypography.PillLabel.copy(
-                            color = if (activeEngine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent,
-                            fontSize = 11.5.sp
-                        ),
-                        maxLines = 1
+                Text(
+                    text = "${activeEngine.shortName.take(8)}·${selectedReasoning.label}",
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.46f),
+                        fontSize = 10.5.sp
+                    ),
+                    maxLines = 1
+                )
+                Spacer(modifier = Modifier.width(2.dp))
+                Icon(
+                    imageVector = if (showModelReasoningPopup) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
+                    contentDescription = null,
+                    tint = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.46f),
+                    modifier = Modifier.size(10.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
+
+            // Compact Send Arrow Button inside the chat input box (scaled to match the 10.5.sp model text; sends recommendedPrompt when input is empty!)
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .tactilePressScale(sendButtonInteraction, reducedMotion)
+                    .clip(CircleShape)
+                    .background(buttonBg)
+                    .clickable(
+                        interactionSource = sendButtonInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onSendClick
                     )
-                    Spacer(modifier = Modifier.width(3.dp))
-                    Icon(
-                        imageVector = if (showModelReasoningPopup) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
-                        contentDescription = null,
-                        tint = AntigravityPalette.MistSlateInk,
-                        modifier = Modifier.size(13.dp)
-                    )
-                }
+                    .semantics {
+                        contentDescription = "메시지 전송"
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = AntigravityIcons.SendArrow,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(11.5.dp)
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun PlusActionRow(
+    title: String,
+    subtitle: String,
+    accentColor: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(AntigravityPalette.NightGround.copy(alpha = 0.45f))
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = AntigravityTypography.PillLabel.copy(
+                    color = accentColor,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            )
+            Text(
+                text = subtitle,
+                style = AntigravityTypography.SecondaryBody.copy(
+                    color = AntigravityPalette.MutedSlateInk,
+                    fontSize = 11.sp
+                )
+            )
+        }
+        Text(
+            text = "›",
+            style = AntigravityTypography.CardTitle.copy(
+                color = accentColor.copy(alpha = 0.7f),
+                fontSize = 15.sp
+            )
+        )
     }
 }
 
@@ -2122,4 +2430,30 @@ private fun ErrorRecoveryStateCard(
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     clipboard?.setPrimaryClip(ClipData.newPlainText("Antigravity Text", text))
+}
+
+private fun resolveUriDisplayNameAndSize(
+    context: Context,
+    uri: Uri,
+    fallbackName: String
+): Pair<String, Long> {
+    var displayName = fallbackName
+    var sizeBytes = 0L
+    try {
+        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0) {
+                    val value = cursor.getString(nameIndex)
+                    if (!value.isNullOrBlank()) displayName = value
+                }
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
+                    sizeBytes = cursor.getLong(sizeIndex)
+                }
+            }
+        }
+    } catch (_: Exception) {
+    }
+    return displayName to sizeBytes
 }

@@ -29,9 +29,9 @@ import androidx.compose.ui.unit.sp
  */
 object AntigravityPalette {
     val NightGround = Color(0xFF000000)       // Pure Black (#000000)
-    val NightSurface = Color(0xFF141417)      // Soft Dark Surface (#141417) - AI bubble & input bar
-    val NightRaised = Color(0xFF222227)       // Raised Dark Surface (#222227) - User bubble & active pill
-    val NightCodeWell = Color(0xFF09090B)     // Deep terminal code well
+    val NightSurface = Color(0xFF0D0D11)      // Ultra-soft faint surface (#0D0D11) - AI bubble & input bar
+    val NightRaised = Color(0xFF16161C)       // Soft faint raised surface (#16161C) - User bubble & active pill
+    val NightCodeWell = Color(0xFF070709)     // Deep terminal code well
     val NightRule = Color(0xFF27272A)         // Subtle rule
     val NightRuleSubtle = Color(0xFF18181B)
 

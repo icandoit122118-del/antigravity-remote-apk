@@ -305,8 +305,8 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port$endpoint")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
-                    connectTimeout = 1200
-                    readTimeout = 3500
+                    connectTimeout = 2000
+                    readTimeout = 16000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 }
@@ -363,7 +363,8 @@ object PcBridgeClient {
         host: String,
         port: Int,
         command: String,
-        sessionId: String
+        sessionId: String,
+        projectName: String = ""
     ): LiveSyncState? = postJsonForSyncState(
         host = host,
         port = port,
@@ -371,6 +372,33 @@ object PcBridgeClient {
         payloadObj = JSONObject().apply {
             put("command", command)
             put("sessionId", sessionId)
+            if (projectName.isNotBlank()) {
+                put("projectName", projectName)
+            }
+        }
+    )
+
+    suspend fun attachMediaToPc(
+        host: String,
+        port: Int,
+        mediaType: String,
+        fileName: String,
+        fileSize: Long,
+        sessionId: String,
+        projectName: String = ""
+    ): LiveSyncState? = postJsonForSyncState(
+        host = host,
+        port = port,
+        endpoint = "/api/remote-control",
+        payloadObj = JSONObject().apply {
+            put("command", "attach_media")
+            put("mediaType", mediaType)
+            put("fileName", fileName)
+            put("fileSize", fileSize)
+            put("sessionId", sessionId)
+            if (projectName.isNotBlank()) {
+                put("projectName", projectName)
+            }
         }
     )
 
