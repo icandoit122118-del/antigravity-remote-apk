@@ -52,9 +52,14 @@ class AntigravityRemoteInstrumentedTest {
         composeTestRule.onNodeWithContentDescription("모델 및 추론 선택").performClick()
         composeTestRule.waitForIdle()
 
-        // 4. Tap compact Send arrow when input is empty to send the AI-work-based recommended prompt
+        // 4. Tap compact Send arrow when input is empty to send the AI-work-based recommended prompt;
+        // verify the button transforms into Stop ("스트리밍 중지") and tapping it stops streaming
         composeTestRule.onNodeWithContentDescription("메시지 전송").performClick()
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithContentDescription("스트리밍 중지").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("스트리밍 중지").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithContentDescription("메시지 전송").assertIsDisplayed()
 
         // 5. Open Settings via icon-only button
         composeTestRule.onNodeWithContentDescription("설정 열기").performClick()

@@ -227,6 +227,15 @@ fun AntigravityRemoteScreen() {
         syncLiveSessionsFromBridge(bridgeHost, port)
     }
 
+    LaunchedEffect(currentSession.messages.size, isStreaming) {
+        if (currentSession.messages.isNotEmpty()) {
+            try {
+                listState.scrollToItem(currentSession.messages.lastIndex)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun stopActiveStream() {
         activeStreamJob?.cancel()
         activeStreamJob = null
@@ -601,9 +610,16 @@ fun AntigravityRemoteScreen() {
                                 key = { it.id }
                             ) { message ->
                                 val isDetailExpanded = expandedDetails[message.id] ?: false
+                                val isStreamingThisBubble = isStreaming && (
+                                    message.id == activeStreamingAgentMsgId ||
+                                        (message.role == MessageRole.AGENT && message.id == currentSession.messages.lastOrNull()?.id)
+                                )
 
                                 ChatMessageCard(
                                     message = message,
+                                    isStreamingBubble = isStreamingThisBubble,
+                                    streamPhaseLabel = streamPhaseLabel,
+                                    steeringStatusLabel = steeringStatusLabel,
                                     isDetailExpanded = isDetailExpanded,
                                     copiedBlockId = copiedBlockId,
                                     reducedMotion = reducedMotion,
@@ -627,21 +643,7 @@ fun AntigravityRemoteScreen() {
                 }
             }
 
-            // 3. Active Streaming Pill (Only visible WHILE generating an answer; hidden when idle!)
-            AnimatedVisibility(
-                visible = isStreaming,
-                enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically() + fadeIn(),
-                exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically() + fadeOut()
-            ) {
-                ActiveStreamBanner(
-                    phaseLabel = streamPhaseLabel,
-                    steeringStatusLabel = steeringStatusLabel,
-                    reducedMotion = reducedMotion,
-                    onStopStream = { stopActiveStream() }
-                )
-            }
-
-            // 4. Clean Bottom Input Bar with Inside [+] Button, Recommended Prompt, Model & Reasoning Selector, and Compact Send Arrow
+            // 3. Clean Bottom Input Bar with Inside [+] Button, Recommended Prompt, Ultra-Compact Model·Reasoning Tag, and Send/Stop Toggle Button
             SimplePromptInputDock(
                 quickPrompts = currentSession.quickPrompts,
                 recommendedPrompt = recommendedPrompt,
@@ -888,6 +890,9 @@ private fun SimpleElephantHeader(
 @Composable
 private fun ChatMessageCard(
     message: ChatMessage,
+    isStreamingBubble: Boolean,
+    streamPhaseLabel: String,
+    steeringStatusLabel: String,
     isDetailExpanded: Boolean,
     copiedBlockId: String?,
     reducedMotion: Boolean,
@@ -895,7 +900,11 @@ private fun ChatMessageCard(
     onCopyCode: (String) -> Unit
 ) {
     val isUser = message.role == MessageRole.USER
-    val cardColor = if (isUser) AntigravityPalette.NightRaised else AntigravityPalette.NightSurface
+    val cardColor = if (isUser) {
+        Color(0xFF17171E).copy(alpha = 0.62f)
+    } else {
+        Color(0xFF101016).copy(alpha = 0.52f)
+    }
     val bubbleShape = if (isUser) {
         RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
     } else {
@@ -906,111 +915,133 @@ private fun ChatMessageCard(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
     ) {
-        Surface(
-            modifier = Modifier.widthIn(max = 310.dp),
-            shape = bubbleShape,
-            color = cardColor
+        Column(
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+            Surface(
+                modifier = Modifier.widthIn(max = 315.dp),
+                shape = bubbleShape,
+                color = cardColor
             ) {
-                // Main Answer Text Only (No author name or timestamp)
-                Text(
-                    text = message.bodyText,
-                    style = AntigravityTypography.ChatBody
-                )
-
-                // Small-font live steering / task adjustment status ("대화조정중 · 작업조정중 · 확인중")
-                if (message.steeringStatusText.isNotBlank()) {
-                    Spacer(modifier = Modifier.height(6.dp))
+                Column(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    // Main Answer Text Only (No author name or timestamp)
                     Text(
-                        text = message.steeringStatusText,
-                        style = AntigravityTypography.SecondaryBody.copy(
-                            color = AntigravityPalette.WarmLampGold,
-                            fontSize = 11.sp,
-                            lineHeight = 15.sp
-                        )
+                        text = message.bodyText,
+                        style = AntigravityTypography.ChatBody
                     )
-                }
 
-                // Optional Code Block (only when code is present)
-                if (!message.codeBlockContent.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    CodeSnippetCard(
-                        language = message.codeBlockLanguage ?: "코드",
-                        code = message.codeBlockContent,
-                        isCopied = copiedBlockId == message.id,
-                        reducedMotion = reducedMotion,
-                        onCopy = { onCopyCode(message.codeBlockContent) }
-                    )
-                }
-
-                // Subtle, single collapsible toggle for details (Collapsed by default!)
-                val hasDetails = message.thoughtText.isNotBlank() || message.tools.isNotEmpty()
-                if (!isUser && hasDetails) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    val detailInteraction = remember { MutableInteractionSource() }
-                    Row(
-                        modifier = Modifier
-                            .defaultMinSize(minHeight = 36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(
-                                interactionSource = detailInteraction,
-                                indication = null,
-                                role = Role.Button,
-                                onClick = onToggleDetail
-                            )
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    // Small-font live steering / task adjustment status ("대화조정중 · 작업조정중 · 확인중")
+                    if (message.steeringStatusText.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = if (isDetailExpanded) "진행 과정 접기" else "진행 과정 보기",
+                            text = message.steeringStatusText,
                             style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.MutedSlateInk,
-                                fontSize = 12.sp
+                                color = AntigravityPalette.WarmLampGold,
+                                fontSize = 11.sp,
+                                lineHeight = 15.sp
                             )
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Icon(
-                            imageVector = if (isDetailExpanded) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
-                            contentDescription = null,
-                            tint = AntigravityPalette.MutedSlateInk,
-                            modifier = Modifier.size(14.dp)
                         )
                     }
 
-                    AnimatedVisibility(
-                        visible = isDetailExpanded,
-                        enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(180)),
-                        exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(160))
-                    ) {
-                        Column(
+                    // Optional Code Block (only when code is present)
+                    if (!message.codeBlockContent.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        CodeSnippetCard(
+                            language = message.codeBlockLanguage ?: "코드",
+                            code = message.codeBlockContent,
+                            isCopied = copiedBlockId == message.id,
+                            reducedMotion = reducedMotion,
+                            onCopy = { onCopyCode(message.codeBlockContent) }
+                        )
+                    }
+
+                    // Subtle, single collapsible toggle for details (Collapsed by default!)
+                    val hasDetails = message.thoughtText.isNotBlank() || message.tools.isNotEmpty()
+                    if (!isUser && hasDetails) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        val detailInteraction = remember { MutableInteractionSource() }
+                        Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 6.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                                .background(AntigravityPalette.NightGround)
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                                .defaultMinSize(minHeight = 36.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(
+                                    interactionSource = detailInteraction,
+                                    indication = null,
+                                    role = Role.Button,
+                                    onClick = onToggleDetail
+                                )
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (message.thoughtText.isNotBlank()) {
-                                Text(
-                                    text = message.thoughtText,
-                                    style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.5.sp)
+                            Text(
+                                text = if (isDetailExpanded) "진행 과정 접기" else "진행 과정 보기",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.MutedSlateInk,
+                                    fontSize = 12.sp
                                 )
-                            }
-                            message.tools.forEach { tool ->
-                                Text(
-                                    text = "• ${tool.title} (${tool.status.label})",
-                                    style = AntigravityTypography.SecondaryBody.copy(
-                                        color = AntigravityPalette.CalmSageAccent,
-                                        fontSize = 12.sp
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = if (isDetailExpanded) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
+                                contentDescription = null,
+                                tint = AntigravityPalette.MutedSlateInk,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+
+                        AnimatedVisibility(
+                            visible = isDetailExpanded,
+                            enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(180)),
+                            exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(160))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 6.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(AntigravityPalette.NightGround)
+                                    .padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (message.thoughtText.isNotBlank()) {
+                                    Text(
+                                        text = message.thoughtText,
+                                        style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.5.sp)
                                     )
-                                )
+                                }
+                                message.tools.forEach { tool ->
+                                    Text(
+                                        text = "• ${tool.title} (${tool.status.label})",
+                                        style = AntigravityTypography.SecondaryBody.copy(
+                                            color = AntigravityPalette.CalmSageAccent,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            // Plain text streaming indicator directly underneath the AI chat bubble ("답변 스트리밍 ai가 대화 말풍선 밑에 표시되게해 글자만")
+            if (!isUser && isStreamingBubble) {
+                Spacer(modifier = Modifier.height(5.dp))
+                Text(
+                    text = if (steeringStatusLabel.isNotBlank()) {
+                        "$streamPhaseLabel · $steeringStatusLabel"
+                    } else {
+                        "$streamPhaseLabel · 실시간 대화조정 가능"
+                    },
+                    style = AntigravityTypography.SecondaryBody.copy(
+                        color = AntigravityPalette.WarmLampGold.copy(alpha = 0.82f),
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp
+                    ),
+                    modifier = Modifier.padding(start = 6.dp)
+                )
             }
         }
     }
@@ -1193,6 +1224,22 @@ private fun ActiveStreamBanner(
     }
 }
 
+private fun compactModelReasoningTag(engine: AiEngineOption, reasoning: ReasoningEffort): String {
+    val shortModel = when {
+        engine.shortName.contains("Argon", ignoreCase = true) -> "Argon"
+        engine.shortName.contains("Flash", ignoreCase = true) -> "Flash"
+        engine.shortName.contains("Sonnet", ignoreCase = true) -> "Sonnet"
+        engine.shortName.contains("Opus", ignoreCase = true) -> "Opus"
+        engine.shortName.contains("120B", ignoreCase = true) -> "120B"
+        engine.shortName.contains("Qwen", ignoreCase = true) -> "Qwen"
+        engine.shortName.contains("R1", ignoreCase = true) -> "R1"
+        engine.shortName.contains("Llama", ignoreCase = true) -> "Llama"
+        else -> engine.shortName.take(5).trim()
+    }
+    val shortReason = reasoning.label.firstOrNull()?.uppercaseChar() ?: 'M'
+    return "$shortModel·$shortReason"
+}
+
 @Composable
 private fun SimplePromptInputDock(
     quickPrompts: List<String>,
@@ -1230,13 +1277,17 @@ private fun SimplePromptInputDock(
         quickPrompts
     }
 
+    val unifiedPopupContainerColor = Color(0xFF0C0C10).copy(alpha = 0.96f)
+    val unifiedItemSurfaceColor = Color(0xFF15151C).copy(alpha = 0.52f)
+    val unifiedSelectedItemColor = Color(0xFF1E3B36).copy(alpha = 0.62f)
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .background(AntigravityPalette.NightGround)
             .padding(bottom = 8.dp)
     ) {
-        // Floating [+] Attachment & GitHub Push Menu Popup (Aligned to the left above the chat dock)
+        // Floating [+] Attachment & GitHub Push Menu Popup (Unified soft translucent borderless UI)
         AnimatedVisibility(
             visible = showPlusMenuPopup,
             enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(150)) + fadeIn(tween(150)),
@@ -1245,13 +1296,13 @@ private fun SimplePromptInputDock(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 Surface(
-                    modifier = Modifier.widthIn(max = 290.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    color = AntigravityPalette.NightRaised
+                    modifier = Modifier.widthIn(max = 285.dp),
+                    shape = RoundedCornerShape(22.dp),
+                    color = unifiedPopupContainerColor
                 ) {
                     Column(
                         modifier = Modifier.padding(12.dp),
@@ -1286,7 +1337,7 @@ private fun SimplePromptInputDock(
             }
         }
 
-        // Floating Model & Reasoning Picker Popup (Aligned to the right above the chat dock, like Antigravity Desktop!)
+        // Floating Model & Reasoning Picker Popup (Unified soft translucent borderless UI matching main screen!)
         AnimatedVisibility(
             visible = showModelReasoningPopup,
             enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(160)) + fadeIn(tween(160)),
@@ -1295,23 +1346,23 @@ private fun SimplePromptInputDock(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
                 contentAlignment = Alignment.CenterEnd
             ) {
                 Surface(
-                    modifier = Modifier.widthIn(max = 310.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    color = AntigravityPalette.NightRaised
+                    modifier = Modifier.widthIn(max = 300.dp),
+                    shape = RoundedCornerShape(22.dp),
+                    color = unifiedPopupContainerColor
                 ) {
                     Column(
-                        modifier = Modifier.padding(14.dp),
+                        modifier = Modifier.padding(13.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
                             text = "추론 강도 (Reasoning)",
                             style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.MutedSlateInk,
-                                fontSize = 11.5.sp
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f),
+                                fontSize = 11.sp
                             )
                         )
                         Row(
@@ -1323,20 +1374,20 @@ private fun SimplePromptInputDock(
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .defaultMinSize(minHeight = 38.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(if (selected) AntigravityPalette.CalmSageDim else AntigravityPalette.NightGround)
+                                        .defaultMinSize(minHeight = 36.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (selected) unifiedSelectedItemColor else unifiedItemSurfaceColor)
                                         .clickable(role = Role.RadioButton) {
                                             onSelectReasoning(effort)
                                         }
-                                        .padding(vertical = 8.dp),
+                                        .padding(vertical = 7.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
                                         text = effort.label,
                                         style = AntigravityTypography.PillLabel.copy(
-                                            color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk,
-                                            fontSize = 12.sp
+                                            color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                                            fontSize = 11.5.sp
                                         )
                                     )
                                 }
@@ -1347,8 +1398,8 @@ private fun SimplePromptInputDock(
                         Text(
                             text = "AI 모델 선택 (Model)",
                             style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.MutedSlateInk,
-                                fontSize = 11.5.sp
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f),
+                                fontSize = 11.sp
                             )
                         )
 
@@ -1357,7 +1408,7 @@ private fun SimplePromptInputDock(
                                 .fillMaxWidth()
                                 .heightIn(max = 210.dp)
                                 .verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
                             engines.forEach { engine ->
                                 val isSel = engine.id == activeEngine.id
@@ -1365,14 +1416,14 @@ private fun SimplePromptInputDock(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .defaultMinSize(minHeight = 40.dp)
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(if (isSel) AntigravityPalette.NightSurface else Color.Transparent)
+                                        .defaultMinSize(minHeight = 38.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (isSel) unifiedSelectedItemColor else unifiedItemSurfaceColor)
                                         .clickable(role = Role.RadioButton) {
                                             onSelectEngine(engine)
                                             onToggleModelPopup()
                                         }
-                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                        .padding(horizontal = 11.dp, vertical = 8.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -1383,8 +1434,8 @@ private fun SimplePromptInputDock(
                                         Text(
                                             text = engine.shortName,
                                             style = AntigravityTypography.PillLabel.copy(
-                                                color = if (isSel) tint else AntigravityPalette.WarmIvoryInk,
-                                                fontSize = 12.5.sp
+                                                color = if (isSel) tint else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
+                                                fontSize = 12.sp
                                             ),
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
@@ -1393,16 +1444,16 @@ private fun SimplePromptInputDock(
                                         Text(
                                             text = selectedReasoning.label,
                                             style = AntigravityTypography.SecondaryBody.copy(
-                                                color = AntigravityPalette.MutedSlateInk,
-                                                fontSize = 11.sp
+                                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                                fontSize = 10.5.sp
                                             )
                                         )
                                     }
                                     Text(
                                         text = if (isSel) "✓" else engine.providerTag,
                                         style = AntigravityTypography.SecondaryBody.copy(
-                                            color = if (isSel) tint else AntigravityPalette.MutedSlateInk,
-                                            fontSize = 11.sp
+                                            color = if (isSel) tint else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                            fontSize = 10.5.sp
                                         )
                                     )
                                 }
@@ -1417,7 +1468,7 @@ private fun SimplePromptInputDock(
         AnimatedVisibility(visible = promptText.isEmpty()) {
             LazyRow(
                 modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(activePrompts) { chipText ->
@@ -1425,24 +1476,24 @@ private fun SimplePromptInputDock(
                     Box(
                         modifier = Modifier
                             .widthIn(max = 260.dp)
-                            .defaultMinSize(minHeight = 40.dp)
+                            .defaultMinSize(minHeight = 38.dp)
                             .tactilePressScale(chipInteraction, reducedMotion)
                             .clip(RoundedCornerShape(20.dp))
-                            .background(Color(0xFF14141A).copy(alpha = 0.55f))
+                            .background(Color(0xFF14141A).copy(alpha = 0.50f))
                             .clickable(
                                 interactionSource = chipInteraction,
                                 indication = null,
                                 role = Role.Button,
                                 onClick = { onQuickPromptClick(chipText) }
                             )
-                            .padding(horizontal = 13.dp, vertical = 8.dp),
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Text(
                             text = if (isStreaming) "조정 · $chipText" else chipText,
                             style = AntigravityTypography.SecondaryBody.copy(
-                                color = if (isStreaming) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
-                                fontSize = 12.sp
+                                color = if (isStreaming) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.75f),
+                                fontSize = 11.5.sp
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -1452,36 +1503,38 @@ private fun SimplePromptInputDock(
             }
         }
 
-        // Ultra-Soft Faint Borderless Full-Width Input Box:
-        // [+] (backgroundless/borderless) | Semi-Transparent AI-Work Recommended Prompt / Input | Semi-Transparent Model·Reasoning | Compact Send Arrow (↑)
+        // Extended Full-Width Input Box (padding horizontal = 8.dp):
+        // [+] | Wide Recommended Prompt / Input | Ultra-Compact Model·Reasoning (8.5.sp) | Send(↑) <-> Stop(■) Toggle Button
         val hasTypedText = promptText.isNotBlank()
+        val isStopButtonMode = isStreaming && !hasTypedText
         val buttonBg = when {
-            isStreaming -> AntigravityPalette.WarmLampGold.copy(alpha = 0.85f)
+            isStopButtonMode -> AntigravityPalette.SoftCoralDanger.copy(alpha = 0.85f)
+            isStreaming && hasTypedText -> AntigravityPalette.WarmLampGold.copy(alpha = 0.85f)
             hasTypedText -> AntigravityPalette.CalmSageAccent
-            else -> AntigravityPalette.CalmSageAccent.copy(alpha = 0.42f)
+            else -> AntigravityPalette.CalmSageAccent.copy(alpha = 0.45f)
         }
         val iconTint = AntigravityPalette.DeepForestInk
 
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
                 .defaultMinSize(minHeight = 44.dp)
                 .clip(RoundedCornerShape(22.dp))
                 .background(
                     if (isFocused) {
-                        Color(0xFF181820).copy(alpha = 0.65f)
+                        Color(0xFF181820).copy(alpha = 0.62f)
                     } else {
-                        Color(0xFF121218).copy(alpha = 0.50f)
+                        Color(0xFF121218).copy(alpha = 0.48f)
                     }
                 )
-                .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                .padding(start = 8.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Backgroundless, Borderless [+] Button inside the left edge of the chat input box
             Box(
                 modifier = Modifier
-                    .size(28.dp)
+                    .size(24.dp)
                     .tactilePressScale(plusButtonInteraction, reducedMotion)
                     .clickable(
                         interactionSource = plusButtonInteraction,
@@ -1500,17 +1553,17 @@ private fun SimplePromptInputDock(
                         color = if (showPlusMenuPopup) {
                             AntigravityPalette.CalmSageAccent
                         } else {
-                            AntigravityPalette.WarmIvoryInk.copy(alpha = 0.62f)
+                            AntigravityPalette.WarmIvoryInk.copy(alpha = 0.58f)
                         },
-                        fontSize = 18.sp,
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.Medium
                     )
                 )
             }
 
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(3.dp))
 
-            // Input Text Field + Semi-Transparent AI-Work-Based Recommended Task/Test Prompt Placeholder
+            // Maximized-Length Input Text Field + Semi-Transparent AI-Work-Based Recommended Task/Test Prompt Placeholder
             Box(
                 modifier = Modifier.weight(1f),
                 contentAlignment = Alignment.CenterStart
@@ -1520,9 +1573,9 @@ private fun SimplePromptInputDock(
                         text = recommendedPrompt,
                         style = AntigravityTypography.SecondaryBody.copy(
                             color = if (isStreaming) {
-                                AntigravityPalette.WarmLampGold.copy(alpha = 0.48f)
+                                AntigravityPalette.WarmLampGold.copy(alpha = 0.45f)
                             } else {
-                                AntigravityPalette.WarmIvoryInk.copy(alpha = 0.36f)
+                                AntigravityPalette.WarmIvoryInk.copy(alpha = 0.35f)
                             },
                             fontSize = 12.5.sp
                         ),
@@ -1543,12 +1596,12 @@ private fun SimplePromptInputDock(
                 )
             }
 
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(3.dp))
 
-            // Semi-transparent inline Model & Reasoning selector text (opens Model & Reasoning popup on click)
+            // Ultra-small semi-transparent inline Model & Reasoning tag ("Argon·M ⌄" at 8.5.sp) so the chat input box is much wider
             Row(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(6.dp))
                     .tactilePressScale(modelPickerInteraction, reducedMotion)
                     .clickable(
                         interactionSource = modelPickerInteraction,
@@ -1559,32 +1612,32 @@ private fun SimplePromptInputDock(
                     .semantics {
                         contentDescription = "모델 및 추론 선택"
                     }
-                    .padding(horizontal = 5.dp, vertical = 4.dp),
+                    .padding(horizontal = 3.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${activeEngine.shortName.take(8)}·${selectedReasoning.label}",
+                    text = compactModelReasoningTag(activeEngine, selectedReasoning),
                     style = AntigravityTypography.PillLabel.copy(
-                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.46f),
-                        fontSize = 10.5.sp
+                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.40f),
+                        fontSize = 8.5.sp
                     ),
                     maxLines = 1
                 )
-                Spacer(modifier = Modifier.width(2.dp))
+                Spacer(modifier = Modifier.width(1.dp))
                 Icon(
                     imageVector = if (showModelReasoningPopup) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
                     contentDescription = null,
-                    tint = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.46f),
-                    modifier = Modifier.size(10.dp)
+                    tint = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.40f),
+                    modifier = Modifier.size(8.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(3.dp))
 
-            // Compact Send Arrow Button inside the chat input box (scaled to match the 10.5.sp model text; sends recommendedPrompt when input is empty!)
+            // Compact Send Arrow (↑) that transforms into Stop Button (■) while streaming ("보내기누르면 버튼 멈추기 버튼으로 변하개 수정해")
             Box(
                 modifier = Modifier
-                    .size(22.dp)
+                    .size(20.dp)
                     .tactilePressScale(sendButtonInteraction, reducedMotion)
                     .clip(CircleShape)
                     .background(buttonBg)
@@ -1592,18 +1645,20 @@ private fun SimplePromptInputDock(
                         interactionSource = sendButtonInteraction,
                         indication = null,
                         role = Role.Button,
-                        onClick = onSendClick
+                        onClick = {
+                            if (isStopButtonMode) onStopClick() else onSendClick()
+                        }
                     )
                     .semantics {
-                        contentDescription = "메시지 전송"
+                        contentDescription = if (isStopButtonMode) "스트리밍 중지" else "메시지 전송"
                     },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = AntigravityIcons.SendArrow,
+                    imageVector = if (isStopButtonMode) AntigravityIcons.StopSquare else AntigravityIcons.SendArrow,
                     contentDescription = null,
                     tint = iconTint,
-                    modifier = Modifier.size(11.5.dp)
+                    modifier = Modifier.size(10.dp)
                 )
             }
         }
@@ -1620,8 +1675,8 @@ private fun PlusActionRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(AntigravityPalette.NightGround.copy(alpha = 0.45f))
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color(0xFF15151C).copy(alpha = 0.52f))
             .clickable(role = Role.Button, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1632,23 +1687,23 @@ private fun PlusActionRow(
                 text = title,
                 style = AntigravityTypography.PillLabel.copy(
                     color = accentColor,
-                    fontSize = 13.sp,
+                    fontSize = 12.5.sp,
                     fontWeight = FontWeight.SemiBold
                 )
             )
             Text(
                 text = subtitle,
                 style = AntigravityTypography.SecondaryBody.copy(
-                    color = AntigravityPalette.MutedSlateInk,
-                    fontSize = 11.sp
+                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f),
+                    fontSize = 10.5.sp
                 )
             )
         }
         Text(
             text = "›",
             style = AntigravityTypography.CardTitle.copy(
-                color = accentColor.copy(alpha = 0.7f),
-                fontSize = 15.sp
+                color = accentColor.copy(alpha = 0.65f),
+                fontSize = 14.sp
             )
         )
     }
@@ -1691,9 +1746,13 @@ private fun UnifiedSettingsDialog(
     var newProjectFolderInput by rememberSaveable { mutableStateOf("") }
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
 
+    val unifiedDialogBg = Color(0xFF0C0C10).copy(alpha = 0.96f)
+    val unifiedCardBg = Color(0xFF15151C).copy(alpha = 0.52f)
+    val unifiedSelectedCardBg = Color(0xFF1E3B36).copy(alpha = 0.62f)
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = AntigravityPalette.NightSurface,
+        containerColor = unifiedDialogBg,
         titleContentColor = AntigravityPalette.WarmIvoryInk,
         textContentColor = AntigravityPalette.MistSlateInk,
         title = {
@@ -1702,12 +1761,12 @@ private fun UnifiedSettingsDialog(
                     imageVector = AntigravityIcons.SettingsSliders,
                     contentDescription = null,
                     tint = AntigravityPalette.CalmSageAccent,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(18.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "안그래비티 설정",
-                    style = AntigravityTypography.CardTitle
+                    style = AntigravityTypography.CardTitle.copy(fontSize = 15.sp)
                 )
             }
         },
@@ -1717,29 +1776,32 @@ private fun UnifiedSettingsDialog(
                     .fillMaxWidth()
                     .heightIn(max = 460.dp)
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 // Section 1: AI Model Selection (Default vs Local AI)
                 Text(
                     text = "1. 대화할 AI 선택",
-                    style = AntigravityTypography.PillLabel.copy(color = AntigravityPalette.CalmSageAccent)
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
+                        fontSize = 11.5.sp
+                    )
                 )
 
                 engines.forEach { engine ->
                     val isSelected = engine.id == selectedEngineId
                     val accent = if (engine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent
-                    val cardBg = if (isSelected) AntigravityPalette.NightRaised else AntigravityPalette.NightGround
+                    val cardBg = if (isSelected) unifiedSelectedCardBg else unifiedCardBg
 
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = 48.dp)
+                            .defaultMinSize(minHeight = 44.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(cardBg)
                             .clickable(role = Role.RadioButton) {
                                 onSelectEngine(engine)
                             }
-                            .padding(12.dp)
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -1749,28 +1811,32 @@ private fun UnifiedSettingsDialog(
                             Text(
                                 text = engine.label,
                                 style = AntigravityTypography.PillLabel.copy(
-                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk,
-                                    fontWeight = FontWeight.SemiBold
+                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
                                 )
                             )
                             Text(
                                 text = if (isSelected) "사용 중" else engine.providerTag,
                                 style = AntigravityTypography.SecondaryBody.copy(
-                                    color = if (isSelected) accent else AntigravityPalette.MutedSlateInk,
-                                    fontSize = 11.5.sp
+                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                    fontSize = 10.5.sp
                                 )
                             )
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(3.dp))
                         Text(
                             text = engine.description,
-                            style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f),
+                                fontSize = 11.sp
+                            )
                         )
                     }
                 }
 
                 // Section 2: PC Live Session Sync & New Session Creation
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -1778,20 +1844,23 @@ private fun UnifiedSettingsDialog(
                 ) {
                     Text(
                         text = "2. PC 실시간 세션 연동 · 새 세션 생성",
-                        style = AntigravityTypography.PillLabel.copy(color = AntigravityPalette.CalmSageAccent)
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
+                            fontSize = 11.5.sp
+                        )
                     )
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(10.dp))
-                            .background(AntigravityPalette.NightGround)
+                            .background(unifiedCardBg)
                             .clickable(role = Role.Button, onClick = onSyncNow)
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
                     ) {
                         Text(
                             text = "실시간 동기화",
                             style = AntigravityTypography.SecondaryBody.copy(
                                 color = AntigravityPalette.CalmSageAccent,
-                                fontSize = 11.5.sp
+                                fontSize = 11.sp
                             )
                         )
                     }
@@ -1799,28 +1868,28 @@ private fun UnifiedSettingsDialog(
 
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     sessions.forEachIndexed { idx, session ->
                         val selected = idx == selectedSessionIndex && currentViewMode == InspectorViewMode.DEMO_NORMAL
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .defaultMinSize(minHeight = 44.dp)
+                                .defaultMinSize(minHeight = 40.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (selected) AntigravityPalette.CalmSageDim else AntigravityPalette.NightGround)
+                                .background(if (selected) unifiedSelectedCardBg else unifiedCardBg)
                                 .clickable(role = Role.Button) {
                                     onSelectSession(idx)
                                     onDismiss()
                                 }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                .padding(horizontal = 12.dp, vertical = 9.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
                                 text = session.title,
                                 style = AntigravityTypography.PillLabel.copy(
-                                    color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk,
+                                    color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.85f),
                                     fontSize = 12.sp
                                 ),
                                 maxLines = 1,
@@ -1830,8 +1899,8 @@ private fun UnifiedSettingsDialog(
                             Text(
                                 text = session.durationTag,
                                 style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.MutedSlateInk,
-                                    fontSize = 11.sp
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                    fontSize = 10.5.sp
                                 )
                             )
                         }
@@ -1841,24 +1910,24 @@ private fun UnifiedSettingsDialog(
                 // Create New Session on PC from Mobile
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .defaultMinSize(minHeight = 44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(AntigravityPalette.NightGround)
-                            .padding(horizontal = 12.dp, vertical = 11.dp),
+                            .defaultMinSize(minHeight = 40.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(unifiedCardBg)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         if (newSessionTitleInput.isEmpty()) {
                             Text(
                                 text = "새 세션 이름 입력...",
                                 style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.MutedSlateInk,
-                                    fontSize = 12.sp
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.36f),
+                                    fontSize = 11.5.sp
                                 )
                             )
                         }
@@ -1873,59 +1942,65 @@ private fun UnifiedSettingsDialog(
                     }
                     Box(
                         modifier = Modifier
-                            .defaultMinSize(minHeight = 44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(AntigravityPalette.CalmSageAccent)
+                            .defaultMinSize(minHeight = 40.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(AntigravityPalette.CalmSageAccent.copy(alpha = 0.85f))
                             .clickable(role = Role.Button) {
                                 val title = newSessionTitleInput.ifBlank { "모바일 새 세션" }
                                 newSessionTitleInput = ""
                                 onCreateRemoteSession(title, newProjectFolderInput)
                             }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = "+ 새 세션 생성",
                             style = AntigravityTypography.PillLabel.copy(
                                 color = AntigravityPalette.DeepForestInk,
-                                fontSize = 12.sp
+                                fontSize = 11.5.sp
                             )
                         )
                     }
                 }
 
                 // Section 3: PC Project Folder Creation & PC Remote Control
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = "3. PC 프로젝트 폴더 생성 · 리모트 컨트롤",
-                    style = AntigravityTypography.PillLabel.copy(color = AntigravityPalette.WarmLampGold)
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
+                        fontSize = 11.5.sp
+                    )
                 )
 
                 Text(
                     text = "활성 폴더: ~/.gemini/antigravity/scratch/$activePcProjectName (총 ${pcProjects.size.coerceAtLeast(1)}개)",
-                    style = AntigravityTypography.SecondaryBody.copy(fontSize = 11.5.sp)
+                    style = AntigravityTypography.SecondaryBody.copy(
+                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f),
+                        fontSize = 11.sp
+                    )
                 )
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .defaultMinSize(minHeight = 44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(AntigravityPalette.NightGround)
-                            .padding(horizontal = 12.dp, vertical = 11.dp),
+                            .defaultMinSize(minHeight = 40.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(unifiedCardBg)
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         if (newProjectFolderInput.isEmpty()) {
                             Text(
                                 text = "새 프로젝트 폴더명 (예: my-new-app)",
                                 style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.MutedSlateInk,
-                                    fontSize = 12.sp
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.36f),
+                                    fontSize = 11.5.sp
                                 )
                             )
                         }
@@ -1940,23 +2015,23 @@ private fun UnifiedSettingsDialog(
                     }
                     Box(
                         modifier = Modifier
-                            .defaultMinSize(minHeight = 44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(AntigravityPalette.WarmLampGold)
+                            .defaultMinSize(minHeight = 40.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(AntigravityPalette.WarmLampGold.copy(alpha = 0.85f))
                             .clickable(role = Role.Button) {
                                 val folder = newProjectFolderInput.ifBlank { "mobile-project-${System.currentTimeMillis() % 1000}" }
                                 newProjectFolderInput = ""
                                 onCreateRemoteProject(folder)
                                 onDismiss()
                             }
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = "+ 폴더 생성",
                             style = AntigravityTypography.PillLabel.copy(
                                 color = AntigravityPalette.DeepForestInk,
-                                fontSize = 12.sp
+                                fontSize = 11.5.sp
                             )
                         )
                     }
@@ -1975,20 +2050,20 @@ private fun UnifiedSettingsDialog(
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .defaultMinSize(minHeight = 42.dp)
+                                .defaultMinSize(minHeight = 38.dp)
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(AntigravityPalette.NightGround)
+                                .background(unifiedCardBg)
                                 .clickable(role = Role.Button) {
                                     onExecuteRemoteCommand(cmdKey)
                                 }
-                                .padding(horizontal = 6.dp, vertical = 10.dp),
+                                .padding(horizontal = 6.dp, vertical = 9.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
                                 text = cmdLabel,
                                 style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.WarmIvoryInk,
-                                    fontSize = 11.5.sp
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
+                                    fontSize = 11.sp
                                 ),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -2000,16 +2075,19 @@ private fun UnifiedSettingsDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 44.dp)
+                        .defaultMinSize(minHeight = 40.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(AntigravityPalette.NightGround)
+                        .background(unifiedCardBg)
                         .clickable(role = Role.Button, onClick = onClearCurrentChat)
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = "현재 대화 내용 비우기 (새 대화 시작)",
-                        style = AntigravityTypography.SecondaryBody.copy(color = AntigravityPalette.WarmIvoryInk)
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                            fontSize = 11.5.sp
+                        )
                     )
                 }
 
