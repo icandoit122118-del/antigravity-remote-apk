@@ -34,7 +34,20 @@ const CLAUDE_MD_PATH = path.join(CLAUDE_HOME_DIR, 'CLAUDE.md');
 const BRAIN_DIR = path.join(ANTIGRAVITY_ROOT, 'brain');
 const ANNOTATIONS_DIR = path.join(ANTIGRAVITY_ROOT, 'annotations');
 const SCRATCH_DIR = path.join(ANTIGRAVITY_ROOT, 'scratch');
-const PRIMARY_CONVERSATION_ID = 'ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8';
+const ADB_EXE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Android', 'Sdk', 'platform-tools', 'adb.exe');
+const FALLBACK_CONVERSATION_ID = 'ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8';
+
+function ensureAdbReversePortForward() {
+  try {
+    const adbCmd = fs.existsSync(ADB_EXE_PATH) ? `"${ADB_EXE_PATH}"` : 'adb';
+    execSync(`${adbCmd} reverse tcp:${PORT} tcp:${PORT}`, {
+      stdio: 'ignore',
+      timeout: 2500
+    });
+  } catch {
+    // Ignore when no USB device is attached
+  }
+}
 
 function readSystemPromptBundle() {
   const safeRead = (p, fallback = '') => {
@@ -135,14 +148,16 @@ function readAnnotationSessionInfo(convId) {
       }
     }
     const lastViewSec = secMatch ? Number(secMatch[1]) : 0;
-    return { title: title ? title.trim() : null, lastViewSec };
+    const archived = /archived:\s*true/i.test(raw);
+    return { title: title ? title.trim() : null, lastViewSec, archived };
   } catch {
     return null;
   }
 }
 
-let currentActiveSessionId = PRIMARY_CONVERSATION_ID;
+let currentActiveSessionId = FALLBACK_CONVERSATION_ID;
 let currentActiveProjectName = 'antigravity-remote-apk';
+const mobileLastTouchedMs = new Map();
 
 const DEFAULT_OLLAMA_MODEL = process.env.ANTIGRAVITY_OLLAMA_MODEL || 'gemma4-26b-a4b-local';
 const LOCAL_AI_TIMEOUT_MS = Number(process.env.ANTIGRAVITY_LOCAL_AI_TIMEOUT_MS || 30000);
@@ -167,14 +182,16 @@ const deletedProjectNames = new Set();
 
 function getLocalLanIp() {
   const interfaces = os.networkInterfaces();
+  const candidates = [];
   for (const name of Object.keys(interfaces)) {
     for (const net of interfaces[name] || []) {
-      if (net.family === 'IPv4' && !net.internal) {
-        return net.address;
+      if (net.family === 'IPv4' && !net.internal && !net.address.startsWith('169.254.')) {
+        candidates.push(net.address);
       }
     }
   }
-  return '127.0.0.1';
+  const preferred = candidates.find((ip) => ip.startsWith('192.168.')) || candidates[0];
+  return preferred || '127.0.0.1';
 }
 
 function sanitizeFolderName(rawName) {
@@ -342,12 +359,16 @@ function parseTranscriptSession(convId) {
   if (!fs.existsSync(transcriptPath)) return null;
 
   try {
+    const stat = fs.statSync(transcriptPath);
+    const transcriptMtimeMs = stat ? stat.mtimeMs : 0;
     const raw = fs.readFileSync(transcriptPath, 'utf8');
     const lines = raw.split(/\r?\n/).filter(Boolean);
     const messages = [];
     let lastThought = '';
     let pendingTools = [];
     let awaitingTurnResponse = false;
+    let lastStepCreatedAtIso = null;
+    let lastStepCreatedAtMs = transcriptMtimeMs;
 
     for (let idx = 0; idx < lines.length; idx++) {
       const line = lines[idx];
@@ -359,6 +380,8 @@ function parseTranscriptSession(convId) {
       }
 
       const createdAtMs = Date.parse(step.created_at) || (idx * 1000);
+      if (step.created_at) lastStepCreatedAtIso = step.created_at;
+      if (createdAtMs > 0) lastStepCreatedAtMs = createdAtMs;
 
       if (step.type === 'USER_INPUT' && step.source === 'USER_EXPLICIT') {
         const text = extractUserRequestText(step.content);
@@ -387,15 +410,26 @@ function parseTranscriptSession(convId) {
 
         if (Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
           for (const tc of step.tool_calls) {
+            const rawSummary = String(tc.args?.toolSummary || tc.name || 'PC 도구 실행').replace(/^"+|"+$/g, '').trim();
+            const rawTarget = String(tc.args?.CommandLine || tc.args?.Path || tc.args?.query || (tc.args ? JSON.stringify(tc.args).slice(0, 120) : '')).replace(/^"+|"+$/g, '').trim();
             pendingTools.push({
               id: `tool-${step.step_index}-${pendingTools.length}`,
-              title: tc.name || 'tool_call',
-              commandOrPath: tc.args ? JSON.stringify(tc.args).slice(0, 120) : '',
+              title: rawSummary || 'PC 도구 실행',
+              commandOrPath: rawTarget.slice(0, 140),
               outputPreview: '실행 완료',
               durationMs: 320,
               status: 'COMPLETED'
             });
           }
+        } else if (hasToolCalls) {
+          pendingTools.push({
+            id: `tool-${step.step_index}-${pendingTools.length}`,
+            title: 'PC 실시간 도구 실행',
+            commandOrPath: `step #${step.step_index}`,
+            outputPreview: '실행 완료',
+            durationMs: 320,
+            status: 'COMPLETED'
+          });
         }
         const contentText = typeof step.content === 'string' ? step.content.trim() : '';
         if (contentText) {
@@ -412,11 +446,11 @@ function parseTranscriptSession(convId) {
               authorName: '안그래비티 도우미',
               timestamp: formatTimeLabel(step.created_at),
               createdAtMs,
-               isInterimAck: hasToolCalls,
+              isInterimAck: hasToolCalls,
               bodyText: cleanBody,
               thoughtText: lastThought,
               thoughtDurationSec: '1.0초',
-              tools: pendingTools.slice(-4)
+              tools: pendingTools.slice(-5)
             };
             // If the previous message was an interim tool-calling ack for the same user turn and this is the final response, replace the interim ack
             const prev = messages[messages.length - 1];
@@ -433,6 +467,45 @@ function parseTranscriptSession(convId) {
       }
     }
 
+    const isFileActivelyUpdating = (Date.now() - transcriptMtimeMs) < 180 * 1000;
+    const lastRecordedMsg = messages[messages.length - 1];
+
+    // If PC session is mid-turn (either awaiting first text response or running tools after an interim ack), surface live PC work status!
+    if (awaitingTurnResponse && isFileActivelyUpdating) {
+      const liveTools = pendingTools.slice(-5).map((t, i, arr) => (
+        i === arr.length - 1 ? { ...t, status: 'RUNNING', outputPreview: 'PC에서 실시간 실행 중...' } : t
+      ));
+      const latestToolTitle = liveTools.length > 0 ? liveTools[liveTools.length - 1].title : '요청 분석 및 추론 중';
+      messages.push({
+        id: `live-agent-working-${convId.slice(0, 8)}`,
+        role: 'AGENT',
+        authorName: '안그래비티 도우미 (PC 실시간 작업 중)',
+        timestamp: formatTimeLabel(lastStepCreatedAtIso),
+        createdAtMs: Math.max(lastStepCreatedAtMs, transcriptMtimeMs),
+        isStreaming: true,
+        steeringStatusText: `PC 실시간 작업 중 · ${latestToolTitle}`,
+        bodyText: liveTools.length > 0
+          ? `PC에서 실시간 작업을 수행하고 있습니다.\n• 현재 작업: ${latestToolTitle}`
+          : 'PC에서 요청을 분석하고 작업을 준비하고 있습니다...',
+        thoughtText: lastThought || 'PC 안그래비티 세션에서 실시간으로 도구를 실행하고 있습니다.',
+        thoughtDurationSec: '실시간',
+        tools: liveTools
+      });
+    } else if (lastRecordedMsg && lastRecordedMsg.role === 'AGENT' && lastRecordedMsg.isInterimAck && isFileActivelyUpdating) {
+      const combinedTools = [...(lastRecordedMsg.tools || []), ...pendingTools].slice(-5).map((t, i, arr) => (
+        i === arr.length - 1 ? { ...t, status: 'RUNNING', outputPreview: 'PC에서 실시간 실행 중...' } : t
+      ));
+      const latestToolTitle = combinedTools.length > 0 ? combinedTools[combinedTools.length - 1].title : '도구 실행 중';
+      lastRecordedMsg.tools = combinedTools;
+      lastRecordedMsg.isStreaming = true;
+      lastRecordedMsg.createdAtMs = Math.max(lastRecordedMsg.createdAtMs || 0, lastStepCreatedAtMs, transcriptMtimeMs);
+      lastRecordedMsg.timestamp = formatTimeLabel(lastStepCreatedAtIso);
+      lastRecordedMsg.steeringStatusText = `PC 실시간 작업 중 · ${latestToolTitle}`;
+      if (lastThought) {
+        lastRecordedMsg.thoughtText = lastThought;
+      }
+    }
+
     const overlay = mobileMessagesBySession.get(convId) || [];
     for (const item of overlay) {
       messages.push(item);
@@ -445,42 +518,63 @@ function parseTranscriptSession(convId) {
     const customMeta = mobileSessionMeta.get(convId);
     const annotationInfo = readAnnotationSessionInfo(convId);
     const firstUserMsg = messages.find((m) => m.role === 'USER');
-    const isPrimary = convId === PRIMARY_CONVERSATION_ID;
+    const isFallbackPrimary = convId === FALLBACK_CONVERSATION_ID;
     const title = customMeta?.title
       || annotationInfo?.title
-      || (isPrimary
+      || (isFallbackPrimary
         ? 'Anti-Gravity Program APK Conversion'
         : (firstUserMsg ? firstUserMsg.bodyText.slice(0, 26) : `세션 ${convId.slice(0, 8)}`));
 
-    let inferredFolder = customMeta?.projectFolder || (isPrimary ? currentActiveProjectName : '');
+    let inferredFolder = customMeta?.projectFolder || '';
     if (!inferredFolder) {
-      const joinedText = `${title} ${messages.map((m) => m.bodyText).join(' ')}`;
-      if (joinedText.includes('Diablo') || joinedText.includes('D2R') || joinedText.includes('야영지') || joinedText.includes('d2r')) {
-        inferredFolder = 'D2R-HUD';
-      } else if (joinedText.includes('전기산업기사') || joinedText.includes('기출문제') || joinedText.includes('electric-engineer')) {
+      const userAndTitleText = `${title} ${messages.filter((m) => m.role === 'USER').map((m) => m.bodyText).join(' ')}`;
+      const fullJoinedText = `${userAndTitleText} ${messages.map((m) => m.bodyText).join(' ')}`;
+      const knownProjects = listPcProjects().map((p) => p.name);
+      const matchedInUser = knownProjects.find((pName) => userAndTitleText.toLowerCase().includes(pName.toLowerCase()));
+      if (matchedInUser) {
+        inferredFolder = matchedInUser;
+      } else if (userAndTitleText.includes('리모트') || userAndTitleText.includes('안드로이드') || userAndTitleText.includes('APK') || userAndTitleText.includes('Remote')) {
+        inferredFolder = 'antigravity-remote-apk';
+      } else if (userAndTitleText.includes('전기산업기사') || userAndTitleText.includes('기출문제') || userAndTitleText.includes('electric-engineer')) {
         inferredFolder = 'electric-engineer-2026';
-      } else if (joinedText.includes('wikidocs') || joinedText.includes('파이썬')) {
+      } else if (userAndTitleText.includes('Diablo') || userAndTitleText.includes('D2R') || userAndTitleText.includes('야영지') || userAndTitleText.includes('d2r')) {
+        inferredFolder = 'D2R-HUD';
+      } else if (userAndTitleText.includes('메이플') || userAndTitleText.toLowerCase().includes('maple') || userAndTitleText.includes('미꾸라지')) {
+        inferredFolder = userAndTitleText.includes('미꾸라지') ? 'mudfish-maple-guard' : 'auto-maple';
+      } else if (userAndTitleText.includes('백그라운드') || userAndTitleText.includes('캡처')) {
+        inferredFolder = 'win-bg-pipeline';
+      } else if (userAndTitleText.includes('wikidocs') || userAndTitleText.includes('파이썬')) {
         inferredFolder = 'wikidocs-170810-pdf';
       } else {
-        inferredFolder = currentActiveProjectName;
+        const matchedInAll = knownProjects.find((pName) => fullJoinedText.toLowerCase().includes(pName.toLowerCase()));
+        inferredFolder = matchedInAll || currentActiveProjectName;
       }
     }
 
-    const lastMsgMs = recentMessages[recentMessages.length - 1]?.createdAtMs || 0;
-    const isRecentlyActive = isPrimary || (Date.now() - lastMsgMs < 3600 * 1000 * 6);
+    const lastMsgObj = recentMessages[recentMessages.length - 1];
+    const lastMsgMs = Math.max(
+      lastMsgObj?.createdAtMs || 0,
+      transcriptMtimeMs,
+      mobileLastTouchedMs.get(convId) || 0
+    );
+    const isCurrentlyStreaming = Boolean(lastMsgObj?.isStreaming);
+    const isRecentlyActive = isCurrentlyStreaming || (Date.now() - lastMsgMs < 3600 * 1000 * 2);
 
     return {
       id: convId,
       title,
       ambientCaption: inferredFolder,
       branchName: inferredFolder,
-      activeTaskSummary: isPrimary ? 'PC 안그래비티 리모트 컨트롤 및 실시간 세션 연동' : title,
+      activeTaskSummary: isCurrentlyStreaming && lastMsgObj?.steeringStatusText
+        ? lastMsgObj.steeringStatusText
+        : title,
       durationTag: isRecentlyActive ? 'running' : 'paused',
       lastViewSec: annotationInfo?.lastViewSec || 0,
+      lastActivityMs: lastMsgMs,
       quickPrompts: [
-        '오늘 해야 할 일을 깔끔하게 정리해줘',
+        '현재 PC 작업 현황 요약해줘',
         'PC 상태와 프로젝트 폴더 목록 보여줘',
-        '새 프로젝트 폴더 만들어줘'
+        '방금 작업한 내용 실측 테스트 실행해줘'
       ],
       messages: recentMessages
     };
@@ -493,21 +587,13 @@ function getLiveAntigravitySessions() {
   const results = [];
   const seen = new Set();
 
-  // 1. Put mobile-created sessions first if newly created, plus PRIMARY_CONVERSATION_ID
+  // 1. Mobile-created sessions
   for (const [id] of mobileSessionMeta) {
     if (archivedSessionIds.has(id) || deletedSessionIds.has(id)) continue;
     const parsed = parseTranscriptSession(id);
     if (parsed) {
       results.push(parsed);
       seen.add(id);
-    }
-  }
-
-  if (!seen.has(PRIMARY_CONVERSATION_ID) && !archivedSessionIds.has(PRIMARY_CONVERSATION_ID) && !deletedSessionIds.has(PRIMARY_CONVERSATION_ID)) {
-    const primary = parseTranscriptSession(PRIMARY_CONVERSATION_ID);
-    if (primary) {
-      results.unshift(primary);
-      seen.add(PRIMARY_CONVERSATION_ID);
     }
   }
 
@@ -519,12 +605,17 @@ function getLiveAntigravitySessions() {
           const tPath = path.join(BRAIN_DIR, e.name, '.system_generated', 'logs', 'transcript.jsonl');
           const stat = fs.existsSync(tPath) ? fs.statSync(tPath) : null;
           const ann = readAnnotationSessionInfo(e.name);
-          const sortScore = (ann && ann.lastViewSec ? ann.lastViewSec * 1000 : 0) || (stat ? stat.mtimeMs : 0);
-          return { id: e.name, mtimeMs: stat ? stat.mtimeMs : 0, sortScore };
+          if (ann?.archived && !pinnedSessionIds.has(e.name)) {
+            return { id: e.name, mtimeMs: 0, sortScore: 0 };
+          }
+          const mtimeMs = stat ? stat.mtimeMs : 0;
+          const touchMs = mobileLastTouchedMs.get(e.name) || 0;
+          const sortScore = Math.max(mtimeMs, touchMs);
+          return { id: e.name, mtimeMs, sortScore };
         })
         .filter((e) => e.mtimeMs > 0)
         .sort((a, b) => b.sortScore - a.sortScore)
-        .slice(0, 8);
+        .slice(0, 12);
 
       for (const entry of entries) {
         const parsed = parseTranscriptSession(entry.id);
@@ -542,8 +633,15 @@ function getLiveAntigravitySessions() {
     const aPin = pinnedSessionIds.has(a.id);
     const bPin = pinnedSessionIds.has(b.id);
     if (aPin !== bPin) return aPin ? -1 : 1;
-    return 0;
+    return (b.lastActivityMs || 0) - (a.lastActivityMs || 0);
   });
+
+  if (results.length > 0) {
+    currentActiveSessionId = results[0].id;
+    if (results[0].branchName && results[0].branchName !== 'live-sync') {
+      currentActiveProjectName = results[0].branchName;
+    }
+  }
 
   return results;
 }
@@ -554,14 +652,20 @@ function executePcRemoteCommand(command, args = {}) {
   const projects = listPcProjects();
 
   if (command === 'pc_status') {
+    const liveSessions = getLiveAntigravitySessions();
+    const runningList = liveSessions
+      .filter((s) => s.durationTag === 'running')
+      .slice(0, 4)
+      .map((s) => `  - [${s.branchName}] ${s.title}${s.activeTaskSummary && s.activeTaskSummary !== s.title ? ` (${s.activeTaskSummary})` : ''}`);
     return {
       ok: true,
-      title: 'PC 상태 및 리소스 점검',
+      title: 'PC 실시간 작업 현황 및 리소스 점검',
       summary: [
-        `• 호스트: ${os.hostname()} (${os.platform()} ${os.release()})`,
+        `• 호스트: ${os.hostname()} (${os.platform()} ${os.release()}) · LAN ${getLocalLanIp()}:${PORT}`,
         `• 메모리: 여유 ${freeMemMb} MB / 전체 ${totalMemMb} MB`,
-        `• 활성 프로젝트: ${currentActiveProjectName}`,
-        `• 프로젝트 폴더 수: ${projects.length}개 (${projects.slice(0, 4).map((p) => p.name).join(', ') || '없음'})`
+        `• 현재 활성 프로젝트: ${currentActiveProjectName} (전체 ${projects.length}개)`,
+        `• 실시간 진행 중인 PC 세션 (${runningList.length}개):`,
+        ...(runningList.length > 0 ? runningList : ['  - 현재 대기 중'])
       ].join('\n'),
       projects
     };
@@ -768,10 +872,12 @@ async function tryLocalOllama(modelId, prompt) {
 }
 
 function recordOverlayExchange(sessionId, prompt, reply, toolTitle = '안그래비티 라이브 세션 동기화', toolPath = '') {
-  const targetSessionId = sessionId.includes('session-') ? currentActiveSessionId : sessionId;
+  const targetSessionId = (!sessionId || sessionId.includes('session-')) ? currentActiveSessionId : sessionId;
   const list = mobileMessagesBySession.get(targetSessionId) || [];
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
+  mobileLastTouchedMs.set(targetSessionId, nowMs);
+  currentActiveSessionId = targetSessionId;
   list.push({
     id: `mob-user-${nowMs}`,
     role: 'USER',
@@ -1133,7 +1239,7 @@ const server = http.createServer((req, res) => {
             deletedSessionIds.add(sessionId);
             pinnedSessionIds.delete(sessionId);
             mobileSessionMeta.delete(sessionId);
-            if (sessionId !== PRIMARY_CONVERSATION_ID) {
+            if (sessionId !== FALLBACK_CONVERSATION_ID) {
               try {
                 const sDir = path.join(BRAIN_DIR, sessionId);
                 if (fs.existsSync(sDir)) fs.rmSync(sDir, { recursive: true, force: true });
@@ -1265,7 +1371,7 @@ const server = http.createServer((req, res) => {
         if (folderMatch && folderMatch[1]) {
           const created = createPcProjectFolder(folderMatch[1], `모바일 채팅 명령("${prompt}")으로 생성됨`);
           reply = `PC에 새 프로젝트 폴더를 즉시 생성했습니다.\n• 폴더명: ${created.folderName}\n• 경로: ${created.path}`;
-        } else if (prompt.includes('폴더 목록') || prompt.includes('프로젝트 목록') || prompt.includes('PC 상태')) {
+        } else if (prompt.includes('폴더 목록') || prompt.includes('프로젝트 목록') || prompt.includes('PC 상태') || prompt.includes('작업 현황') || prompt.includes('작업현황')) {
           const statusRes = executePcRemoteCommand('pc_status');
           const listRes = executePcRemoteCommand('list_projects');
           reply = `${statusRes.summary}\n\n${listRes.summary}`;
@@ -1313,6 +1419,9 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
+  ensureAdbReversePortForward();
+  setInterval(ensureAdbReversePortForward, 8000).unref();
+  getLiveAntigravitySessions();
   const lanIp = getLocalLanIp();
   console.log(`[Antigravity PC Remote Control + Live Session Sync] Listening on http://${lanIp}:${PORT} (active session: ${currentActiveSessionId})`);
 });

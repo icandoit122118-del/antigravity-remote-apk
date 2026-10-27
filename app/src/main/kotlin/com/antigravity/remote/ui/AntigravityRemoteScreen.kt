@@ -218,6 +218,7 @@ fun AntigravityRemoteScreen() {
     val expandedDetails = remember { mutableStateMapOf<String, Boolean>() }
 
     val listState = rememberLazyListState()
+    var hasCompletedInitialLiveSync by remember { mutableStateOf(false) }
 
     fun applyLiveSyncState(state: LiveSyncState?) {
         if (state == null) return
@@ -229,16 +230,24 @@ fun AntigravityRemoteScreen() {
         if (state.sessions.isNotEmpty()) {
             val prevSelectedId = normalSessions.getOrNull(selectedNormalIndex)?.id
             val currentSignature = normalSessions.joinToString("|") { s ->
-                "${s.id}:${s.title}:${s.messages.size}:${s.messages.lastOrNull()?.id.orEmpty()}:${s.messages.lastOrNull()?.bodyText?.hashCode() ?: 0}"
+                val last = s.messages.lastOrNull()
+                "${s.id}:${s.title}:${s.durationTag}:${s.messages.size}:${last?.id.orEmpty()}:${last?.bodyText?.hashCode() ?: 0}:${last?.isStreaming ?: false}:${last?.steeringStatusText.orEmpty()}:${last?.tools?.size ?: 0}"
             }
             val nextSignature = state.sessions.joinToString("|") { s ->
-                "${s.id}:${s.title}:${s.messages.size}:${s.messages.lastOrNull()?.id.orEmpty()}:${s.messages.lastOrNull()?.bodyText?.hashCode() ?: 0}"
+                val last = s.messages.lastOrNull()
+                "${s.id}:${s.title}:${s.durationTag}:${s.messages.size}:${last?.id.orEmpty()}:${last?.bodyText?.hashCode() ?: 0}:${last?.isStreaming ?: false}:${last?.steeringStatusText.orEmpty()}:${last?.tools?.size ?: 0}"
             }
-            if (currentSignature != nextSignature) {
+            if (!hasCompletedInitialLiveSync || currentSignature != nextSignature) {
+                val isFirstSync = !hasCompletedInitialLiveSync
+                hasCompletedInitialLiveSync = true
                 normalSessions.clear()
                 normalSessions.addAll(state.sessions)
-                val matchedIdx = state.sessions.indexOfFirst { it.id == prevSelectedId }
-                selectedNormalIndex = if (matchedIdx >= 0) matchedIdx else 0
+                if (isFirstSync) {
+                    selectedNormalIndex = 0
+                } else {
+                    val matchedIdx = state.sessions.indexOfFirst { it.id == prevSelectedId }
+                    selectedNormalIndex = if (matchedIdx >= 0) matchedIdx else 0
+                }
             }
         }
     }
@@ -1370,6 +1379,19 @@ private fun SimpleElephantHeader(
                 Row(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(
+                                when (connectionState) {
+                                    BridgeConnectionState.CONNECTED_PC -> AntigravityPalette.CalmSageAccent
+                                    BridgeConnectionState.AUTO_RESYNCING, BridgeConnectionState.CONNECTING -> AntigravityPalette.WarmLampGold
+                                    else -> AntigravityPalette.WarmIvoryInk.copy(alpha = 0.35f)
+                                }
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
                         text = currentSessionTitle,
                         style = AntigravityTypography.PillLabel.copy(

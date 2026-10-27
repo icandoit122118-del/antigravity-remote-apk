@@ -61,7 +61,7 @@ object PcBridgeClient {
     fun candidateHosts(primaryHost: String): List<String> {
         val clean = primaryHost.trim().ifBlank { "127.0.0.1" }
         val remembered = lastHealthyHost?.takeIf { it.isNotBlank() }
-        return listOfNotNull(clean, remembered, "127.0.0.1", "10.0.2.2").distinct()
+        return listOfNotNull(clean, remembered, "127.0.0.1", "192.168.219.100", "10.254.49.74", "10.0.2.2").distinct()
     }
 
     suspend fun checkBridgeHealth(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
@@ -135,6 +135,12 @@ object PcBridgeClient {
                             val tools = mutableListOf<ToolExecutionItem>()
                             for (t in 0 until tArr.length()) {
                                 val tObj = tArr.optJSONObject(t) ?: continue
+                                val rawStatus = tObj.optString("status", "COMPLETED")
+                                val toolStatus = when {
+                                    rawStatus.equals("RUNNING", ignoreCase = true) -> ToolRunStatus.RUNNING
+                                    rawStatus.equals("FAILED", ignoreCase = true) -> ToolRunStatus.FAILED
+                                    else -> ToolRunStatus.COMPLETED
+                                }
                                 tools.add(
                                     ToolExecutionItem(
                                         id = tObj.optString("id", "tool-$t"),
@@ -142,7 +148,7 @@ object PcBridgeClient {
                                         commandOrPath = tObj.optString("commandOrPath", ""),
                                         outputPreview = tObj.optString("outputPreview", "완료"),
                                         durationMs = tObj.optLong("durationMs", 250L),
-                                        status = ToolRunStatus.COMPLETED
+                                        status = toolStatus
                                     )
                                 )
                             }
@@ -155,7 +161,9 @@ object PcBridgeClient {
                                     thoughtText = mObj.optString("thoughtText", ""),
                                     thoughtDurationSec = mObj.optString("thoughtDurationSec", "1.0초"),
                                     tools = tools,
-                                    bodyText = mObj.optString("bodyText", "")
+                                    bodyText = mObj.optString("bodyText", ""),
+                                    isStreaming = mObj.optBoolean("isStreaming", false),
+                                    steeringStatusText = mObj.optString("steeringStatusText", "")
                                 )
                             )
                         }
@@ -230,6 +238,12 @@ object PcBridgeClient {
                 val tools = mutableListOf<ToolExecutionItem>()
                 for (t in 0 until tArr.length()) {
                     val tObj = tArr.optJSONObject(t) ?: continue
+                    val rawStatus = tObj.optString("status", "COMPLETED")
+                    val toolStatus = when {
+                        rawStatus.equals("RUNNING", ignoreCase = true) -> ToolRunStatus.RUNNING
+                        rawStatus.equals("FAILED", ignoreCase = true) -> ToolRunStatus.FAILED
+                        else -> ToolRunStatus.COMPLETED
+                    }
                     tools.add(
                         ToolExecutionItem(
                             id = tObj.optString("id", "tool-$t"),
@@ -237,7 +251,7 @@ object PcBridgeClient {
                             commandOrPath = tObj.optString("commandOrPath", ""),
                             outputPreview = tObj.optString("outputPreview", "완료"),
                             durationMs = tObj.optLong("durationMs", 250L),
-                            status = ToolRunStatus.COMPLETED
+                            status = toolStatus
                         )
                     )
                 }
@@ -250,7 +264,9 @@ object PcBridgeClient {
                         thoughtText = mObj.optString("thoughtText", ""),
                         thoughtDurationSec = mObj.optString("thoughtDurationSec", "1.0초"),
                         tools = tools,
-                        bodyText = mObj.optString("bodyText", "")
+                        bodyText = mObj.optString("bodyText", ""),
+                        isStreaming = mObj.optBoolean("isStreaming", false),
+                        steeringStatusText = mObj.optString("steeringStatusText", "")
                     )
                 )
             }
