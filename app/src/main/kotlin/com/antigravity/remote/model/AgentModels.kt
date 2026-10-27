@@ -22,6 +22,304 @@ enum class ReasoningEffort(val label: String, val korDesc: String) {
     HIGH("높음", "심층 추론")
 }
 
+/**
+ * Moonlight-Android (`com.limelight.binding.input.touch`) Touch Mode:
+ * - DIRECT_TOUCHSCREEN (`AbsoluteTouchContext`): Tapping a point on the mobile screen immediately sends
+ *   `sendMousePosition(x, y, viewW, viewH)` + `BUTTON_LEFT` click at that exact PC coordinate;
+ *   holding >= 650ms within 30px triggers `BUTTON_RIGHT` (right-click); 2-finger vertical drag triggers high-res scroll.
+ * - RELATIVE_TRACKPAD (`RelativeTouchContext`): Dragging moves cursor relatively (`deltaX`, `deltaY`), tap clicks at current cursor.
+ */
+enum class MoonlightTouchMode(val label: String, val badgeDesc: String) {
+    DIRECT_TOUCHSCREEN("터치스크린 (즉시 클릭)", "화면 터치 지점 즉시 PC 좌클릭 · 길게 눌러 우클릭"),
+    RELATIVE_TRACKPAD("트랙패드 (상대 커서)", "드래그로 커서 이동 · 탭하여 현재 위치 클릭");
+
+    val subtitle: String get() = badgeDesc
+}
+
+enum class MoonlightFpsTarget(val fps: Int, val label: String, val frameIntervalMs: Long) {
+    FPS_60(60, "60 FPS", 16L),
+    FPS_120(120, "120 FPS", 8L)
+}
+
+enum class MoonlightMouseButton(val wireName: String, val label: String) {
+    LEFT("LEFT", "좌클릭"),
+    RIGHT("RIGHT", "우클릭"),
+    MIDDLE("MIDDLE", "휠클릭"),
+    DOUBLE("DOUBLE", "더블클릭"),
+    NONE("NONE", "이동")
+}
+
+data class MoonlightInputPacket(
+    val type: String,
+    val button: String = "LEFT",
+    val x: Float = 0f,
+    val y: Float = 0f,
+    val refWidth: Float = 1920f,
+    val refHeight: Float = 1080f,
+    val deltaX: Float = 0f,
+    val deltaY: Float = 0f,
+    val scrollDelta: Int = 0,
+    val keySpec: String = ""
+) {
+    constructor(
+        action: String,
+        normalizedX: Float = 0.5f,
+        normalizedY: Float = 0.5f,
+        button: MoonlightMouseButton = MoonlightMouseButton.LEFT,
+        scrollAmount: Int = 0,
+        keyText: String = ""
+    ) : this(
+        type = if (action == "KEY_PRESS") "KEY" else action,
+        button = button.wireName,
+        x = normalizedX.coerceIn(0f, 1f) * 1920f,
+        y = normalizedY.coerceIn(0f, 1f) * 1080f,
+        refWidth = 1920f,
+        refHeight = 1080f,
+        deltaX = 0f,
+        deltaY = 0f,
+        scrollDelta = scrollAmount * 120,
+        keySpec = keyText
+    )
+
+    val action: String get() = type
+    val normalizedX: Float get() = if (refWidth > 0f) (x / refWidth).coerceIn(0f, 1f) else 0.5f
+    val normalizedY: Float get() = if (refHeight > 0f) (y / refHeight).coerceIn(0f, 1f) else 0.5f
+    val mouseButton: MoonlightMouseButton
+        get() = MoonlightMouseButton.entries.find { it.wireName.equals(button, ignoreCase = true) }
+            ?: MoonlightMouseButton.LEFT
+}
+
+data class SunshineFrameMetadata(
+    val screenWidth: Int = 1920,
+    val screenHeight: Int = 1080,
+    val cursorX: Int = 960,
+    val cursorY: Int = 540,
+    val frameSeq: Long = 0L,
+    val lastEvent: String = "Sunshine + Moonlight 60~120fps 준비됨",
+    val isLiveFrame: Boolean = false
+)
+
+/**
+ * Pure Kotlin reverse-engineered port of Moonlight-Android's `AbsoluteTouchContext` & `RelativeTouchContext`
+ * (`com.limelight.binding.input.touch`), keeping exact thresholds and coordinate normalization testable in unit tests.
+ */
+object MoonlightTouchEngine {
+    const val LONG_PRESS_TIME_THRESHOLD_MS = 650L
+    const val LONG_PRESS_DISTANCE_THRESHOLD_PX = 30f
+    const val DOUBLE_TAP_TIME_THRESHOLD_MS = 250L
+    const val DOUBLE_TAP_DISTANCE_THRESHOLD_PX = 60f
+    const val TOUCH_DOWN_DEAD_ZONE_TIME_THRESHOLD_MS = 100L
+    const val TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD_PX = 20f
+    const val LONG_PRESS_TIME_THRESHOLD = LONG_PRESS_TIME_THRESHOLD_MS
+    const val TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD = TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD_PX
+    const val SCROLL_SPEED_FACTOR = 3
+
+    fun clampToStreamView(coord: Float, maxDim: Float): Float {
+        if (maxDim <= 1f) return 0f
+        return coord.coerceIn(0f, maxDim)
+    }
+
+    fun clampNormalized(
+        touchX: Float,
+        touchY: Float,
+        viewWidth: Float,
+        viewHeight: Float
+    ): Pair<Float, Float> {
+        val safeW = viewWidth.coerceAtLeast(1f)
+        val safeH = viewHeight.coerceAtLeast(1f)
+        val nx = (clampToStreamView(touchX, safeW) / safeW).coerceIn(0f, 1f)
+        val ny = (clampToStreamView(touchY, safeH) / safeH).coerceIn(0f, 1f)
+        return nx to ny
+    }
+
+    fun mapToHostCoordinate(normalized: Float, hostDimension: Int): Int {
+        val safeDim = hostDimension.coerceAtLeast(1)
+        return kotlin.math.round(normalized.coerceIn(0f, 1f) * (safeDim - 1).coerceAtLeast(1)).toInt()
+            .coerceIn(0, (safeDim - 1).coerceAtLeast(0))
+    }
+
+    fun mapStreamViewToHostCoord(
+        eventX: Float,
+        eventY: Float,
+        viewWidth: Float,
+        viewHeight: Float,
+        hostWidth: Int = 1920,
+        hostHeight: Int = 1080
+    ): Pair<Int, Int> {
+        val safeW = viewWidth.coerceAtLeast(1f)
+        val safeH = viewHeight.coerceAtLeast(1f)
+        val clampedX = clampToStreamView(eventX, safeW)
+        val clampedY = clampToStreamView(eventY, safeH)
+        val normX = (clampedX / safeW).coerceIn(0f, 1f)
+        val normY = (clampedY / safeH).coerceIn(0f, 1f)
+        val targetX = Math.round(normX * (hostWidth - 1).coerceAtLeast(1))
+        val targetY = Math.round(normY * (hostHeight - 1).coerceAtLeast(1))
+        return targetX to targetY
+    }
+
+    fun distanceExceeds(deltaX: Float, deltaY: Float, limit: Float): Boolean {
+        return kotlin.math.hypot(deltaX.toDouble(), deltaY.toDouble()) > limit.toDouble()
+    }
+
+    fun resolveDirectTouchGesture(
+        downX: Float,
+        downY: Float,
+        upX: Float,
+        upY: Float,
+        durationMs: Long,
+        viewWidth: Float,
+        viewHeight: Float,
+        previousTapUpTimeMs: Long = 0L,
+        previousTapUpX: Float = -999f,
+        previousTapUpY: Float = -999f,
+        currentUpTimeMs: Long = 0L
+    ): MoonlightInputPacket {
+        val safeW = viewWidth.coerceAtLeast(1f)
+        val safeH = viewHeight.coerceAtLeast(1f)
+        val clampedUpX = clampToStreamView(upX, safeW)
+        val clampedUpY = clampToStreamView(upY, safeH)
+        val clampedDownX = clampToStreamView(downX, safeW)
+        val clampedDownY = clampToStreamView(downY, safeH)
+
+        val movedBeyondLongPress = distanceExceeds(
+            upX - downX,
+            upY - downY,
+            LONG_PRESS_DISTANCE_THRESHOLD_PX
+        )
+        val movedBeyondDeadZone = distanceExceeds(
+            upX - downX,
+            upY - downY,
+            TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD_PX
+        )
+
+        // 1. Long press (>= 650ms within 30px) -> Right Click at touch-down coordinate
+        if (durationMs >= LONG_PRESS_TIME_THRESHOLD_MS && !movedBeyondLongPress) {
+            return MoonlightInputPacket(
+                type = "LONG_PRESS_RIGHT",
+                button = "RIGHT",
+                x = clampedDownX,
+                y = clampedDownY,
+                refWidth = safeW,
+                refHeight = safeH
+            )
+        }
+
+        // 2. Drag movement beyond deadzone -> Move cursor to final coordinate
+        if (movedBeyondDeadZone) {
+            return MoonlightInputPacket(
+                type = "ABS_POS",
+                button = "LEFT",
+                x = clampedUpX,
+                y = clampedUpY,
+                refWidth = safeW,
+                refHeight = safeH
+            )
+        }
+
+        // 3. Double tap within 250ms and 60px -> Double Left Click at original tap position
+        val isDoubleTap = previousTapUpTimeMs > 0L &&
+            (currentUpTimeMs - previousTapUpTimeMs) in 1L..DOUBLE_TAP_TIME_THRESHOLD_MS &&
+            !distanceExceeds(clampedDownX - previousTapUpX, clampedDownY - previousTapUpY, DOUBLE_TAP_DISTANCE_THRESHOLD_PX)
+
+        if (isDoubleTap) {
+            return MoonlightInputPacket(
+                type = "DOUBLE_TAP",
+                button = "DOUBLE",
+                x = clampedDownX,
+                y = clampedDownY,
+                refWidth = safeW,
+                refHeight = safeH
+            )
+        }
+
+        // 4. Standard Touchscreen Tap -> Immediate Left Click at exact touch point
+        return MoonlightInputPacket(
+            type = "TOUCH_TAP",
+            button = "LEFT",
+            x = clampedDownX,
+            y = clampedDownY,
+            refWidth = safeW,
+            refHeight = safeH
+        )
+    }
+
+    fun resolveDirectTouchGesture(
+        downX: Float,
+        downY: Float,
+        upX: Float,
+        upY: Float,
+        viewWidth: Float,
+        viewHeight: Float,
+        holdDurationMs: Long,
+        timeSinceLastTapMs: Long,
+        lastTapX: Float,
+        lastTapY: Float
+    ): MoonlightInputPacket {
+        val safeW = viewWidth.coerceAtLeast(1f)
+        val safeH = viewHeight.coerceAtLeast(1f)
+        val clampedUpX = clampToStreamView(upX, safeW)
+        val clampedUpY = clampToStreamView(upY, safeH)
+        val clampedDownX = clampToStreamView(downX, safeW)
+        val clampedDownY = clampToStreamView(downY, safeH)
+
+        val movedBeyondLongPress = distanceExceeds(
+            upX - downX,
+            upY - downY,
+            LONG_PRESS_DISTANCE_THRESHOLD_PX
+        )
+        val movedBeyondDeadZone = distanceExceeds(
+            upX - downX,
+            upY - downY,
+            TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD_PX
+        )
+
+        if (holdDurationMs >= LONG_PRESS_TIME_THRESHOLD_MS && !movedBeyondLongPress) {
+            return MoonlightInputPacket(
+                type = "LONG_PRESS_RIGHT",
+                button = "RIGHT",
+                x = clampedUpX,
+                y = clampedUpY,
+                refWidth = safeW,
+                refHeight = safeH
+            )
+        }
+
+        if (movedBeyondDeadZone) {
+            return MoonlightInputPacket(
+                type = "ABS_POS",
+                button = "LEFT",
+                x = clampedUpX,
+                y = clampedUpY,
+                refWidth = safeW,
+                refHeight = safeH
+            )
+        }
+
+        val isDoubleTap = timeSinceLastTapMs in 1L..DOUBLE_TAP_TIME_THRESHOLD_MS &&
+            !distanceExceeds(clampedUpX - lastTapX, clampedUpY - lastTapY, DOUBLE_TAP_DISTANCE_THRESHOLD_PX)
+
+        if (isDoubleTap) {
+            return MoonlightInputPacket(
+                type = "DOUBLE_TAP",
+                button = "LEFT",
+                x = clampedUpX,
+                y = clampedUpY,
+                refWidth = safeW,
+                refHeight = safeH
+            )
+        }
+
+        return MoonlightInputPacket(
+            type = "TOUCH_TAP",
+            button = "LEFT",
+            x = clampedUpX,
+            y = clampedUpY,
+            refWidth = safeW,
+            refHeight = safeH
+        )
+    }
+}
+
 data class AiEngineOption(
     val id: String,
     val label: String,

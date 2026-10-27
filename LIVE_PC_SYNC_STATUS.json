@@ -1,10 +1,10 @@
 {
   "ok": true,
-  "syncedAt": "2026-10-27T11:03:35.345Z",
+  "syncedAt": "2026-10-27T11:47:12.407Z",
   "hostname": "choidongseop",
-  "activeSessionId": "e1505035-0d06-4266-8437-ba7a31d49207",
-  "activeProjectName": "antigravity-remote-apk",
-  "lastMobilePrompt": "[PC 리모트 컨트롤] PC 실시간 작업 현황 및 리소스 점검",
-  "lastPcReply": "• 호스트: choidongseop (win32 10.0.26200) · LAN 169.254.83.107:8766\n• 메모리: 여유 5666 MB / 전체 32678 MB\n• 현재 활성 프로젝트: antigravity-remote-apk (전체 14개)\n• 실시간 진행 중인 PC 세션 (4개):\n  - [antigravity-remote-apk] Android App PC Remote Control Troubleshooting\n  - [D2R-HUD] 백그라운드 캡처 및 입력 원리\n  - [electric-engineer-2026] 5년치 기출문제 개념별 수집 (PC 실시간 작업 중 · Update Ollama Modelfiles with Antigravity prompt and verify lcode v2.0 skills harness)\n  - [auto-maple] Auto Maple GitHub Repository",
-  "totalOverlayExchanges": 1
+  "activeSessionId": "ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8",
+  "activeProjectName": "auto-maple",
+  "lastMobilePrompt": "[시스템 프롬프트 편집] CLAUDE.md (Claude 전역 지침) 저장",
+  "lastPcReply": "PC 시스템 프롬프트(CLAUDE.md (Claude 전역 지침))를 업데이트하고 저장했습니다.\n• 줄 수: 128줄 (16682자)\n• 자동 백업 생성 및 실시간 반영 완료",
+  "totalOverlayExchanges": 6
 }

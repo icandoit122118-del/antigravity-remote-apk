@@ -3,11 +3,14 @@ package com.antigravity.remote.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.view.HapticFeedbackConstants
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -17,12 +20,26 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.systemGestureExclusion
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.positionChange
+import kotlin.math.abs
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.animation.expandIn
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -112,7 +129,13 @@ import com.antigravity.remote.model.BridgeConnectionState
 import com.antigravity.remote.model.ChatMessage
 import com.antigravity.remote.model.InspectorViewMode
 import com.antigravity.remote.model.MessageRole
+import com.antigravity.remote.model.MoonlightFpsTarget
+import com.antigravity.remote.model.MoonlightInputPacket
+import com.antigravity.remote.model.MoonlightMouseButton
+import com.antigravity.remote.model.MoonlightTouchEngine
+import com.antigravity.remote.model.MoonlightTouchMode
 import com.antigravity.remote.model.ReasoningEffort
+import com.antigravity.remote.model.SunshineFrameMetadata
 import com.antigravity.remote.model.WorkspaceSession
 import com.antigravity.remote.network.LiveSyncState
 import com.antigravity.remote.network.PcBridgeClient
@@ -149,6 +172,9 @@ fun AntigravityRemoteScreen() {
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
     var showSessionProjectPopup by rememberSaveable { mutableStateOf(false) }
     var showSystemPromptEditor by rememberSaveable { mutableStateOf(false) }
+    var showMoonlightTouchStream by rememberSaveable { mutableStateOf(false) }
+    var moonlightTouchMode by rememberSaveable { mutableStateOf(MoonlightTouchMode.DIRECT_TOUCHSCREEN) }
+    var moonlightFpsTarget by rememberSaveable { mutableStateOf(MoonlightFpsTarget.FPS_60) }
     var systemPromptBundle by remember { mutableStateOf(PcBridgeClient.defaultSystemPromptBundle()) }
     var systemPromptStatusBanner by remember { mutableStateOf("") }
 
@@ -219,8 +245,9 @@ fun AntigravityRemoteScreen() {
 
     val listState = rememberLazyListState()
     var hasCompletedInitialLiveSync by remember { mutableStateOf(false) }
+    val knownPcSessionIds = remember { mutableStateListOf<String>() }
 
-    fun applyLiveSyncState(state: LiveSyncState?) {
+    fun applyLiveSyncState(state: LiveSyncState?, forceSelectFirst: Boolean = false) {
         if (state == null) return
         connectionState = BridgeConnectionState.CONNECTED_PC
         autoSyncRetryCount = 0
@@ -229,21 +256,37 @@ fun AntigravityRemoteScreen() {
         pcProjects.addAll(state.projects)
         if (state.sessions.isNotEmpty()) {
             val prevSelectedId = normalSessions.getOrNull(selectedNormalIndex)?.id
+            val topSessionId = state.sessions.first().id
+            val isBrandNewTopSession = hasCompletedInitialLiveSync && topSessionId !in knownPcSessionIds
+            for (s in state.sessions) {
+                if (s.id !in knownPcSessionIds) {
+                    knownPcSessionIds.add(s.id)
+                }
+            }
+
             val currentSignature = normalSessions.joinToString("|") { s ->
-                val last = s.messages.lastOrNull()
-                "${s.id}:${s.title}:${s.durationTag}:${s.messages.size}:${last?.id.orEmpty()}:${last?.bodyText?.hashCode() ?: 0}:${last?.isStreaming ?: false}:${last?.steeringStatusText.orEmpty()}:${last?.tools?.size ?: 0}"
+                val msgSig = s.messages.takeLast(6).joinToString(",") { m ->
+                    "${m.id}:${m.bodyText.hashCode()}:${m.thoughtText.hashCode()}:${m.isStreaming}:${m.steeringStatusText}:${m.tools.size}"
+                }
+                "${s.id}:${s.title}:${s.branchName}:${s.activeTaskSummary}:${s.durationTag}:${s.messages.size}:$msgSig"
             }
             val nextSignature = state.sessions.joinToString("|") { s ->
-                val last = s.messages.lastOrNull()
-                "${s.id}:${s.title}:${s.durationTag}:${s.messages.size}:${last?.id.orEmpty()}:${last?.bodyText?.hashCode() ?: 0}:${last?.isStreaming ?: false}:${last?.steeringStatusText.orEmpty()}:${last?.tools?.size ?: 0}"
+                val msgSig = s.messages.takeLast(6).joinToString(",") { m ->
+                    "${m.id}:${m.bodyText.hashCode()}:${m.thoughtText.hashCode()}:${m.isStreaming}:${m.steeringStatusText}:${m.tools.size}"
+                }
+                "${s.id}:${s.title}:${s.branchName}:${s.activeTaskSummary}:${s.durationTag}:${s.messages.size}:$msgSig"
             }
-            if (!hasCompletedInitialLiveSync || currentSignature != nextSignature) {
+            if (!hasCompletedInitialLiveSync || forceSelectFirst || isBrandNewTopSession || currentSignature != nextSignature) {
                 val isFirstSync = !hasCompletedInitialLiveSync
                 hasCompletedInitialLiveSync = true
                 normalSessions.clear()
                 normalSessions.addAll(state.sessions)
-                if (isFirstSync) {
+                if (isFirstSync || forceSelectFirst || isBrandNewTopSession) {
                     selectedNormalIndex = 0
+                    val topFolder = state.sessions.first().branchName
+                    if (topFolder.isNotBlank() && topFolder != "session" && topFolder != "live-sync") {
+                        activePcProjectName = topFolder
+                    }
                 } else {
                     val matchedIdx = state.sessions.indexOfFirst { it.id == prevSelectedId }
                     selectedNormalIndex = if (matchedIdx >= 0) matchedIdx else 0
@@ -255,14 +298,14 @@ fun AntigravityRemoteScreen() {
     suspend fun syncLiveSessionsFromBridge(
         host: String,
         port: Int,
-        retryAttemptsOnDisconnect: Int = 1
+        retryAttemptsOnDisconnect: Int = 1,
+        forceSelectFirst: Boolean = false
     ): Boolean {
-        val healthy = PcBridgeClient.checkBridgeHealth(host, port)
-        if (healthy) {
+        val state = PcBridgeClient.fetchLiveSyncState(host, port)
+        if (state != null) {
             connectionState = BridgeConnectionState.CONNECTED_PC
             autoSyncRetryCount = 0
-            val state = PcBridgeClient.fetchLiveSyncState(host, port)
-            applyLiveSyncState(state)
+            applyLiveSyncState(state, forceSelectFirst = forceSelectFirst)
             if (systemPromptBundle.updatedAt == "기본값 로드됨") {
                 val livePrompts = PcBridgeClient.fetchSystemPrompts(host, port)
                 if (livePrompts != null) {
@@ -278,11 +321,11 @@ fun AntigravityRemoteScreen() {
                 host = host,
                 port = port,
                 maxAttempts = retryAttemptsOnDisconnect.coerceAtLeast(1),
-                retryDelayMs = 300L,
+                retryDelayMs = 250L,
                 onAttempt = { autoSyncRetryCount += 1 }
             )
             if (recovered != null) {
-                applyLiveSyncState(recovered)
+                applyLiveSyncState(recovered, forceSelectFirst = forceSelectFirst)
                 return true
             }
             connectionState = BridgeConnectionState.AUTO_RESYNCING
@@ -301,17 +344,18 @@ fun AntigravityRemoteScreen() {
         }
     }
 
-    // Continuous real-time PC Bridge session sync & auto-resync loop
+    // Continuous real-time PC Bridge session sync & auto-resync loop (sub-second 650ms cadence)
     LaunchedEffect(bridgeHost, bridgePortText, autoSyncEnabled) {
         val port = bridgePortText.toIntOrNull() ?: 8766
         while (true) {
             if (!isStreaming && viewMode == InspectorViewMode.DEMO_NORMAL) {
                 syncLiveSessionsFromBridge(bridgeHost, port, retryAttemptsOnDisconnect = 1)
             }
-            val nextDelayMs = if (connectionState == BridgeConnectionState.AUTO_RESYNCING && autoSyncEnabled) {
-                1800L
-            } else {
-                2500L
+            val hasRunningPcSession = normalSessions.any { it.durationTag == "running" || it.messages.lastOrNull()?.isStreaming == true }
+            val nextDelayMs = when {
+                connectionState == BridgeConnectionState.AUTO_RESYNCING && autoSyncEnabled -> 800L
+                hasRunningPcSession -> 500L
+                else -> 650L
             }
             delay(nextDelayMs)
         }
@@ -457,7 +501,9 @@ fun AntigravityRemoteScreen() {
                     activeStreamingAgentMsgId = null
                     steeringStatusLabel = ""
                     pendingSteerNotes.clear()
-                    if (!frame.fromLiveBridge) {
+                    if (frame.syncState != null && viewMode == InspectorViewMode.DEMO_NORMAL) {
+                        applyLiveSyncState(frame.syncState)
+                    } else if (!frame.fromLiveBridge) {
                         triggerAutoResyncIfDisconnected()
                     }
                 }
@@ -672,11 +718,12 @@ fun AntigravityRemoteScreen() {
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
-            // 1. Top Header: Left [세션·프로젝트] icon (with subtle session & folder label), Right [설정] icon
+            // 1. Top Header: Left [세션·프로젝트] icon, Right [화면터치원격(Moonlight)] & [설정] icons
             SimpleElephantHeader(
                 currentSessionTitle = currentSession.title,
                 activeProjectFolder = activePcProjectName,
                 isSessionPopupOpen = showSessionProjectPopup,
+                isMoonlightActive = showMoonlightTouchStream,
                 connectionState = if (viewMode == InspectorViewMode.ERROR) {
                     BridgeConnectionState.DISCONNECTED_ERROR
                 } else {
@@ -690,6 +737,12 @@ fun AntigravityRemoteScreen() {
                         showModelReasoningPopup = false
                     }
                 },
+                onOpenMoonlightStream = {
+                    showSessionProjectPopup = false
+                    showPlusMenuPopup = false
+                    showModelReasoningPopup = false
+                    showMoonlightTouchStream = true
+                },
                 onOpenSettings = {
                     showSessionProjectPopup = false
                     showSettingsSheet = true
@@ -697,11 +750,61 @@ fun AntigravityRemoteScreen() {
             )
 
             // 2. Main Conversation Area (Takes full center space without extra chip bars!)
+            // Left-edge swipe (drag right from the left edge) opens the session/project panel.
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        val edgeWidthPx = 72.dp.toPx()
+                        val openDistancePx = 56.dp.toPx()
+                        awaitEachGesture {
+                            val down = awaitFirstDown(
+                                requireUnconsumed = false,
+                                pass = PointerEventPass.Initial
+                            )
+                            if (down.position.x > edgeWidthPx) return@awaitEachGesture
+                            val slop = viewConfiguration.touchSlop
+                            var totalX = 0f
+                            var totalY = 0f
+                            var isEdgeSwipe = false
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: return@awaitEachGesture
+                                if (!change.pressed) return@awaitEachGesture
+                                val delta = change.positionChange()
+                                totalX += delta.x
+                                totalY += delta.y
+                                if (!isEdgeSwipe && (abs(totalX) > slop || abs(totalY) > slop)) {
+                                    // Only a mostly-horizontal rightward drag counts; vertical scroll passes through.
+                                    if (totalX > 0f && abs(totalX) > abs(totalY) * 1.5f) {
+                                        isEdgeSwipe = true
+                                    } else {
+                                        return@awaitEachGesture
+                                    }
+                                }
+                                if (isEdgeSwipe) {
+                                    change.consume()
+                                    if (totalX >= openDistancePx) {
+                                        showPlusMenuPopup = false
+                                        showModelReasoningPopup = false
+                                        showSessionProjectPopup = true
+                                        return@awaitEachGesture
+                                    }
+                                }
+                            }
+                        }
+                    }
             ) {
+                // Keep the system back gesture from swallowing the left-edge swipe.
+                // Android only honors up to 200dp of vertical exclusion per edge, so keep the rect at 200dp.
+                Spacer(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .width(40.dp)
+                        .height(200.dp)
+                        .systemGestureExclusion()
+                )
                 when (viewMode) {
                     InspectorViewMode.LOADING -> {
                         LoadingStateCardList(reducedMotion = reducedMotion)
@@ -928,6 +1031,11 @@ fun AntigravityRemoteScreen() {
                         }
                     }
                 },
+                onOpenMoonlightStream = {
+                    showPlusMenuPopup = false
+                    showModelReasoningPopup = false
+                    showMoonlightTouchStream = true
+                },
                 onToggleModelPopup = {
                     showModelReasoningPopup = !showModelReasoningPopup
                     if (showModelReasoningPopup) showPlusMenuPopup = false
@@ -947,6 +1055,20 @@ fun AntigravityRemoteScreen() {
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = 0.54f))
+                    .pointerInput(Unit) {
+                        var dragSum = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragSum = 0f },
+                            onDragEnd = { dragSum = 0f },
+                            onDragCancel = { dragSum = 0f }
+                        ) { _, dragAmount ->
+                            dragSum += dragAmount
+                            if (dragSum < -48.dp.toPx()) {
+                                showSessionProjectPopup = false
+                                dragSum = 0f
+                            }
+                        }
+                    }
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -1082,7 +1204,7 @@ fun AntigravityRemoteScreen() {
                         coroutineScope.launch {
                             val state = PcBridgeClient.createRemoteSession(bridgeHost, port, sessionTitle, projectFolder)
                             if (state != null) {
-                                applyLiveSyncState(state)
+                                applyLiveSyncState(state, forceSelectFirst = true)
                             } else {
                                 val folder = projectFolder.ifBlank { activePcProjectName }
                                 val newSession = WorkspaceSession(
@@ -1210,6 +1332,10 @@ fun AntigravityRemoteScreen() {
                         }
                     }
                 },
+                onOpenMoonlightStream = {
+                    showSettingsSheet = false
+                    showMoonlightTouchStream = true
+                },
                 onSelectViewMode = { mode ->
                     viewMode = mode
                     showSettingsSheet = false
@@ -1304,6 +1430,24 @@ fun AntigravityRemoteScreen() {
                 onDismiss = { showSystemPromptEditor = false }
             )
         }
+
+        // Full-Screen Sunshine + Moonlight 60~120FPS Touchscreen Remote Control Overlay
+        if (showMoonlightTouchStream) {
+            MoonlightTouchScreenOverlay(
+                host = bridgeHost,
+                port = bridgePortText.toIntOrNull() ?: 8766,
+                connectionState = connectionState,
+                touchMode = moonlightTouchMode,
+                fpsTarget = moonlightFpsTarget,
+                reducedMotion = reducedMotion,
+                onTouchModeChange = { moonlightTouchMode = it },
+                onFpsTargetChange = { moonlightFpsTarget = it },
+                onConnectionVerified = {
+                    connectionState = BridgeConnectionState.CONNECTED_PC
+                },
+                onDismiss = { showMoonlightTouchStream = false }
+            )
+        }
     }
 }
 
@@ -1312,12 +1456,15 @@ private fun SimpleElephantHeader(
     currentSessionTitle: String,
     activeProjectFolder: String,
     isSessionPopupOpen: Boolean,
+    isMoonlightActive: Boolean,
     connectionState: BridgeConnectionState,
     reducedMotion: Boolean,
     onToggleSessionPopup: () -> Unit,
+    onOpenMoonlightStream: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     val sessionButtonInteraction = remember { MutableInteractionSource() }
+    val moonlightInteraction = remember { MutableInteractionSource() }
     val settingsInteraction = remember { MutableInteractionSource() }
 
     Row(
@@ -1418,33 +1565,71 @@ private fun SimpleElephantHeader(
             }
         }
 
-        // Right: Icon-only [설정] button (44dp circle, borderless dark surface)
-        Surface(
-            modifier = Modifier
-                .size(44.dp)
-                .tactilePressScale(settingsInteraction, reducedMotion)
-                .clickable(
-                    interactionSource = settingsInteraction,
-                    indication = null,
-                    role = Role.Button,
-                    onClick = onOpenSettings
-                )
-                .semantics {
-                    contentDescription = "설정 열기"
-                },
-            shape = CircleShape,
-            color = AntigravityPalette.NightSurface
+        // Right: [PC 화면 터치 원격 (Moonlight)] 44dp circle + [설정] 44dp circle
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
+            Surface(
+                modifier = Modifier
+                    .size(44.dp)
+                    .tactilePressScale(moonlightInteraction, reducedMotion)
+                    .clickable(
+                        interactionSource = moonlightInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onOpenMoonlightStream
+                    )
+                    .semantics {
+                        contentDescription = "PC 화면 터치 원격 제어 열기"
+                    },
+                shape = CircleShape,
+                color = if (isMoonlightActive) {
+                    Color(0xFF1E3B36).copy(alpha = 0.78f)
+                } else {
+                    AntigravityPalette.NightSurface
+                }
             ) {
-                Icon(
-                    imageVector = AntigravityIcons.SettingsSliders,
-                    contentDescription = null,
-                    tint = AntigravityPalette.WarmIvoryInk,
-                    modifier = Modifier.size(19.dp)
-                )
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AntigravityIcons.DesktopStreamCursor,
+                        contentDescription = null,
+                        tint = AntigravityPalette.CalmSageAccent,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+            }
+
+            Surface(
+                modifier = Modifier
+                    .size(44.dp)
+                    .tactilePressScale(settingsInteraction, reducedMotion)
+                    .clickable(
+                        interactionSource = settingsInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onOpenSettings
+                    )
+                    .semantics {
+                        contentDescription = "설정 열기"
+                    },
+                shape = CircleShape,
+                color = AntigravityPalette.NightSurface
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AntigravityIcons.SettingsSliders,
+                        contentDescription = null,
+                        tint = AntigravityPalette.WarmIvoryInk,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
             }
         }
     }
@@ -1887,6 +2072,7 @@ private fun SimplePromptInputDock(
     onPickVideo: () -> Unit,
     onPushWorkToGitHub: () -> Unit,
     onOpenSystemPromptEditor: () -> Unit,
+    onOpenMoonlightStream: () -> Unit,
     onToggleModelPopup: () -> Unit,
     onSelectEngine: (AiEngineOption) -> Unit,
     onSelectReasoning: (ReasoningEffort) -> Unit
@@ -1951,6 +2137,12 @@ private fun SimplePromptInputDock(
                             subtitle = "동영상 첨부 및 PC 세션 전송",
                             accentColor = AntigravityPalette.WarmIvoryInk,
                             onClick = onPickVideo
+                        )
+                        PlusActionRow(
+                            title = "PC 화면 터치 원격 제어 (Moonlight)",
+                            subtitle = "60~120FPS 초저지연 스트리밍 · 터치 지점 즉시 PC 마우스 클릭",
+                            accentColor = AntigravityPalette.CalmSageAccent,
+                            onClick = onOpenMoonlightStream
                         )
                         PlusActionRow(
                             title = "작업내용 깃허브 올리기",
@@ -2927,6 +3119,7 @@ private fun UnifiedSettingsDialog(
     onSyncNow: () -> Unit,
     onClearCurrentChat: () -> Unit,
     onOpenSystemPromptEditor: () -> Unit,
+    onOpenMoonlightStream: () -> Unit,
     onSelectViewMode: (InspectorViewMode) -> Unit,
     onDismiss: () -> Unit,
     onSaveSettings: (String, String, String) -> Unit
@@ -3164,6 +3357,38 @@ private fun UnifiedSettingsDialog(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(unifiedSelectedCardBg)
+                        .clickable(role = Role.Button, onClick = onOpenMoonlightStream)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = AntigravityIcons.DesktopStreamCursor,
+                            contentDescription = null,
+                            tint = AntigravityPalette.CalmSageAccent,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(7.dp))
+                        Text(
+                            text = "PC 화면 터치 원격 제어 (Sunshine · Moonlight 60~120FPS)",
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = AntigravityPalette.CalmSageAccent,
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
                     }
                 }
 
@@ -4270,6 +4495,749 @@ private fun SystemPromptEditorDialog(
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     clipboard?.setPrimaryClip(ClipData.newPlainText("Antigravity Text", text))
+}
+
+/**
+ * Reverse-Engineered Sunshine + Moonlight (`AbsoluteTouchContext.java` & `RelativeTouchContext.java`)
+ * Ultra-Low-Latency (60~120FPS) Touchscreen & Trackpad Remote Control Overlay.
+ *
+ * - Touchscreen Mode (`DIRECT_TOUCHSCREEN`):
+ *   - Touching any coordinate on the streamed PC screen immediately maps to exact normalized PC coordinates
+ *     via `MoonlightTouchEngine.clampNormalized` & `mapToHostCoordinate` and triggers an immediate PC mouse click (`TOUCH_TAP`).
+ *   - Holding >= 650ms within 30px triggers PC right-click (`LONG_PRESS_RIGHT`).
+ *   - Tapping twice within 250ms and 60px triggers PC double-click (`DOUBLE_TAP`).
+ *   - Moving beyond 20px deadzone drags the PC cursor continuously (`ABS_POS`).
+ *   - Two-finger drag scrolls the PC wheel (`SCROLL`, factor 3x).
+ * - Trackpad Mode (`RELATIVE_TRACKPAD`):
+ *   - Single-finger drag moves PC cursor relatively (`REL_MOVE`); tap clicks at current cursor position.
+ */
+@Composable
+private fun MoonlightTouchScreenOverlay(
+    host: String,
+    port: Int,
+    connectionState: BridgeConnectionState,
+    touchMode: MoonlightTouchMode,
+    fpsTarget: MoonlightFpsTarget,
+    reducedMotion: Boolean,
+    onTouchModeChange: (MoonlightTouchMode) -> Unit,
+    onFpsTargetChange: (MoonlightFpsTarget) -> Unit,
+    onConnectionVerified: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val view = LocalView.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var liveFrameBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    var frameMeta by remember { mutableStateOf(SunshineFrameMetadata()) }
+    var canvasSize by remember { mutableStateOf(IntSize(1280, 720)) }
+    var measuredFps by remember { mutableIntStateOf(fpsTarget.fps) }
+    var isLiveStreamingPc by remember { mutableStateOf(connectionState == BridgeConnectionState.CONNECTED_PC) }
+
+    // Normalized cursor position on the screen canvas (0f..1f)
+    var cursorNormX by remember { mutableStateOf(0.5f) }
+    var cursorNormY by remember { mutableStateOf(0.5f) }
+    var lastTouchNormX by remember { mutableStateOf(0.5f) }
+    var lastTouchNormY by remember { mutableStateOf(0.5f) }
+    var lastActionBadge by remember { mutableStateOf("화면을 터치하면 해당 PC 좌표에 즉시 클릭이 발생합니다") }
+    var isRightClickRipple by remember { mutableStateOf(false) }
+
+    // Composite-only GPU ripple animation for touch-to-click target feedback
+    val rippleProgress = remember { Animatable(1f) }
+
+    // Track last tap time & coordinates for Moonlight's 250ms / 60px double-tap detector
+    var lastTapUpTimeMs by remember { mutableStateOf(0L) }
+    var lastTapUpX by remember { mutableStateOf(0f) }
+    var lastTapUpY by remember { mutableStateOf(0f) }
+
+    fun triggerRipple(normX: Float, normY: Float, rightClick: Boolean) {
+        lastTouchNormX = normX
+        lastTouchNormY = normY
+        isRightClickRipple = rightClick
+        if (!reducedMotion) {
+            coroutineScope.launch {
+                rippleProgress.snapTo(0f)
+                rippleProgress.animateTo(
+                    targetValue = 1f,
+                    animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing)
+                )
+            }
+        }
+    }
+
+    fun dispatchPacketToPc(packet: MoonlightInputPacket, badgeSummary: String) {
+        lastActionBadge = badgeSummary
+        coroutineScope.launch {
+            val updatedMeta = PcBridgeClient.sendSunshineInput(host, port, packet)
+            if (updatedMeta != null) {
+                isLiveStreamingPc = true
+                onConnectionVerified()
+                frameMeta = updatedMeta
+                if (updatedMeta.screenWidth > 0 && updatedMeta.screenHeight > 0) {
+                    cursorNormX = (updatedMeta.cursorX.toFloat() / updatedMeta.screenWidth.toFloat()).coerceIn(0f, 1f)
+                    cursorNormY = (updatedMeta.cursorY.toFloat() / updatedMeta.screenHeight.toFloat()).coerceIn(0f, 1f)
+                }
+            } else {
+                // Offline / standalone simulation fallback updates local simulated PC cursor
+                val simW = frameMeta.screenWidth.coerceAtLeast(1920)
+                val simH = frameMeta.screenHeight.coerceAtLeast(1080)
+                val nextX = (cursorNormX * simW).toInt().coerceIn(0, simW - 1)
+                val nextY = (cursorNormY * simH).toInt().coerceIn(0, simH - 1)
+                frameMeta = frameMeta.copy(
+                    screenWidth = simW,
+                    screenHeight = simH,
+                    cursorX = nextX,
+                    cursorY = nextY,
+                    lastEvent = badgeSummary
+                )
+            }
+        }
+    }
+
+    // High-FPS (60~120fps) frame polling loop from SunshineHostDaemon via PC Bridge
+    LaunchedEffect(host, port, fpsTarget) {
+        var frameCounter = 0
+        var windowStartMs = System.currentTimeMillis()
+        while (true) {
+            val tickStart = System.currentTimeMillis()
+            val payload = PcBridgeClient.fetchSunshineFrame(host, port)
+            if (payload != null && payload.jpegBytes.isNotEmpty()) {
+                val decoded = try {
+                    BitmapFactory.decodeByteArray(payload.jpegBytes, 0, payload.jpegBytes.size)?.asImageBitmap()
+                } catch (_: Exception) {
+                    null
+                }
+                if (decoded != null) {
+                    liveFrameBitmap = decoded
+                    isLiveStreamingPc = true
+                    onConnectionVerified()
+                    frameMeta = payload.metadata
+                    if (payload.metadata.screenWidth > 0 && payload.metadata.screenHeight > 0) {
+                        cursorNormX = (payload.metadata.cursorX.toFloat() / payload.metadata.screenWidth.toFloat()).coerceIn(0f, 1f)
+                        cursorNormY = (payload.metadata.cursorY.toFloat() / payload.metadata.screenHeight.toFloat()).coerceIn(0f, 1f)
+                    }
+                }
+            } else {
+                isLiveStreamingPc = false
+            }
+
+            frameCounter += 1
+            val now = System.currentTimeMillis()
+            val elapsedWindow = now - windowStartMs
+            if (elapsedWindow >= 1000L) {
+                measuredFps = if (isLiveStreamingPc) {
+                    ((frameCounter * 1000f) / elapsedWindow.toFloat()).toInt().coerceIn(1, fpsTarget.fps)
+                } else {
+                    fpsTarget.fps
+                }
+                frameCounter = 0
+                windowStartMs = now
+            }
+
+            val frameCost = System.currentTimeMillis() - tickStart
+            val sleepMs = (fpsTarget.frameIntervalMs - frameCost).coerceAtLeast(4L)
+            delay(sleepMs)
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = AntigravityPalette.NightGround
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // 1. Top Bar: Sunshine + Moonlight Status, Live Resolution & FPS, Close Button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        modifier = Modifier.size(38.dp),
+                        shape = CircleShape,
+                        color = Color(0xFF172D29)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = AntigravityIcons.DesktopStreamCursor,
+                                contentDescription = null,
+                                tint = AntigravityPalette.CalmSageAccent,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isLiveStreamingPc) AntigravityPalette.CalmSageAccent
+                                        else AntigravityPalette.WarmLampGold
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Sunshine · Moonlight 터치 원격",
+                                style = AntigravityTypography.CardTitle.copy(fontSize = 14.5.sp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Text(
+                            text = if (isLiveStreamingPc) {
+                                "PC 실시간 스트리밍 (${frameMeta.screenWidth}×${frameMeta.screenHeight} · ${fpsTarget.label})"
+                            } else {
+                                "단독 시뮬레이션 화면 (${frameMeta.screenWidth}×${frameMeta.screenHeight} · ${fpsTarget.label})"
+                            },
+                            style = AntigravityTypography.TabularMetric.copy(
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.62f),
+                                fontSize = 11.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                val closeInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .defaultMinSize(minWidth = 48.dp, minHeight = 44.dp)
+                        .tactilePressScale(closeInteraction, reducedMotion)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AntigravityPalette.NightSurface)
+                        .clickable(
+                            interactionSource = closeInteraction,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = onDismiss
+                        )
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "닫기",
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = AntigravityPalette.WarmIvoryInk,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                }
+            }
+
+            // 2. Mode & FPS Selector Row: [터치스크린 (즉시 클릭)] vs [트랙패드 (상대 이동)] | [60 FPS] / [120 FPS]
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MoonlightTouchMode.entries.forEach { mode ->
+                    val selected = mode == touchMode
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 44.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (selected) Color(0xFF172D29) else AntigravityPalette.NightSurface
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (selected) AntigravityPalette.CalmSageAccent.copy(alpha = 0.45f) else Color.Transparent,
+                                shape = RoundedCornerShape(14.dp)
+                            )
+                            .clickable(role = Role.RadioButton) {
+                                onTouchModeChange(mode)
+                                lastActionBadge = "${mode.label}: ${mode.subtitle}"
+                            }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = mode.label,
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.75f),
+                                fontSize = 11.5.sp,
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                MoonlightFpsTarget.entries.forEach { target ->
+                    val selected = target == fpsTarget
+                    Box(
+                        modifier = Modifier
+                            .defaultMinSize(minWidth = 64.dp, minHeight = 44.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(
+                                if (selected) Color(0xFF2B2418) else AntigravityPalette.NightSurface
+                            )
+                            .clickable(role = Role.RadioButton) {
+                                onFpsTargetChange(target)
+                            }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = target.label,
+                            style = AntigravityTypography.TabularMetric.copy(
+                                color = if (selected) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.65f),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        )
+                    }
+                }
+            }
+
+            // 3. Interactive PC Stream Viewport Canvas (16:9 Desktop Aspect Ratio with Direct Touchscreen / Relative Trackpad Engine)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(Color(0xFF07090C))
+                    .border(
+                        width = 1.dp,
+                        color = AntigravityPalette.CalmSageAccent.copy(alpha = 0.28f),
+                        shape = RoundedCornerShape(20.dp)
+                    )
+                    .onSizeChanged { size ->
+                        if (size.width > 0 && size.height > 0) {
+                            canvasSize = size
+                        }
+                    }
+                    .pointerInput(touchMode, host, port) {
+                        awaitEachGesture {
+                            var downPos = Offset.Zero
+                            var latestPos = Offset.Zero
+                            var downTimeMs = System.currentTimeMillis()
+                            var hasInitializedDown = false
+                            var maxPointerCount = 1
+                            var totalScrollDy = 0f
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val activeChanges = event.changes.filter { it.pressed }
+                                if (activeChanges.isEmpty()) {
+                                    break
+                                }
+
+                                if (activeChanges.size > maxPointerCount) {
+                                    maxPointerCount = activeChanges.size
+                                }
+
+                                val primary = activeChanges.first()
+                                if (!hasInitializedDown) {
+                                    hasInitializedDown = true
+                                    downPos = primary.position
+                                    latestPos = primary.position
+                                    downTimeMs = System.currentTimeMillis()
+                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+
+                                    if (touchMode == MoonlightTouchMode.DIRECT_TOUCHSCREEN) {
+                                        val (nx, ny) = MoonlightTouchEngine.clampNormalized(
+                                            touchX = downPos.x,
+                                            touchY = downPos.y,
+                                            viewWidth = size.width.toFloat(),
+                                            viewHeight = size.height.toFloat()
+                                        )
+                                        cursorNormX = nx
+                                        cursorNormY = ny
+                                        triggerRipple(nx, ny, rightClick = false)
+                                    }
+                                } else {
+                                    val prevPos = latestPos
+                                    latestPos = primary.position
+                                    val dx = latestPos.x - prevPos.x
+                                    val dy = latestPos.y - prevPos.y
+
+                                    if (activeChanges.size >= 2) {
+                                        // Two-finger scroll (Moonlight SCROLL_SPEED_FACTOR = 3)
+                                        totalScrollDy += dy
+                                        if (kotlin.math.abs(totalScrollDy) >= 18f) {
+                                            val wheelClicks = ((totalScrollDy / 18f).toInt() * MoonlightTouchEngine.SCROLL_SPEED_FACTOR).coerceIn(-15, 15)
+                                            totalScrollDy = 0f
+                                            dispatchPacketToPc(
+                                                packet = MoonlightInputPacket(
+                                                    action = "SCROLL",
+                                                    normalizedX = cursorNormX,
+                                                    normalizedY = cursorNormY,
+                                                    scrollAmount = wheelClicks
+                                                ),
+                                                badgeSummary = "2손가락 휠 스크롤 (${wheelClicks})"
+                                            )
+                                        }
+                                    } else if (touchMode == MoonlightTouchMode.DIRECT_TOUCHSCREEN) {
+                                        val moveDist = kotlin.math.hypot(
+                                            (latestPos.x - downPos.x).toDouble(),
+                                            (latestPos.y - downPos.y).toDouble()
+                                        ).toFloat()
+                                        if (moveDist > MoonlightTouchEngine.TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD) {
+                                            val (nx, ny) = MoonlightTouchEngine.clampNormalized(
+                                                touchX = latestPos.x,
+                                                touchY = latestPos.y,
+                                                viewWidth = size.width.toFloat(),
+                                                viewHeight = size.height.toFloat()
+                                            )
+                                            cursorNormX = nx
+                                            cursorNormY = ny
+                                        }
+                                    } else {
+                                        // RELATIVE_TRACKPAD mode: relative cursor movement
+                                        val vw = size.width.toFloat().coerceAtLeast(1f)
+                                        val vh = size.height.toFloat().coerceAtLeast(1f)
+                                        cursorNormX = (cursorNormX + (dx / vw) * 1.35f).coerceIn(0f, 1f)
+                                        cursorNormY = (cursorNormY + (dy / vh) * 1.35f).coerceIn(0f, 1f)
+                                    }
+                                }
+                                event.changes.forEach { it.consume() }
+                            }
+
+                            if (hasInitializedDown && maxPointerCount == 1) {
+                                val upTimeMs = System.currentTimeMillis()
+                                val holdMs = (upTimeMs - downTimeMs).coerceAtLeast(0L)
+                                val sinceLastTapMs = if (lastTapUpTimeMs > 0L) {
+                                    (downTimeMs - lastTapUpTimeMs).coerceAtLeast(0L)
+                                } else {
+                                    Long.MAX_VALUE
+                                }
+
+                                if (touchMode == MoonlightTouchMode.DIRECT_TOUCHSCREEN) {
+                                    val packet = MoonlightTouchEngine.resolveDirectTouchGesture(
+                                        downX = downPos.x,
+                                        downY = downPos.y,
+                                        upX = latestPos.x,
+                                        upY = latestPos.y,
+                                        viewWidth = size.width.toFloat(),
+                                        viewHeight = size.height.toFloat(),
+                                        holdDurationMs = holdMs,
+                                        timeSinceLastTapMs = sinceLastTapMs,
+                                        lastTapX = lastTapUpX,
+                                        lastTapY = lastTapUpY
+                                    )
+                                    cursorNormX = packet.normalizedX
+                                    cursorNormY = packet.normalizedY
+
+                                    val hostX = MoonlightTouchEngine.mapToHostCoordinate(packet.normalizedX, frameMeta.screenWidth)
+                                    val hostY = MoonlightTouchEngine.mapToHostCoordinate(packet.normalizedY, frameMeta.screenHeight)
+
+                                    val isRight = packet.mouseButton == MoonlightMouseButton.RIGHT
+                                    triggerRipple(packet.normalizedX, packet.normalizedY, rightClick = isRight)
+                                    if (isRight) {
+                                        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                    }
+
+                                    val actionKor = when (packet.action) {
+                                        "DOUBLE_TAP" -> "더블클릭"
+                                        "LONG_PRESS_RIGHT" -> "길게 눌러 우클릭"
+                                        "ABS_POS" -> "드래그 이동 후 클릭"
+                                        else -> "터치 지점 즉시 좌클릭"
+                                    }
+                                    dispatchPacketToPc(
+                                        packet = packet,
+                                        badgeSummary = "PC ($hostX, $hostY) $actionKor"
+                                    )
+
+                                    lastTapUpTimeMs = upTimeMs
+                                    lastTapUpX = latestPos.x
+                                    lastTapUpY = latestPos.y
+                                } else {
+                                    // RELATIVE_TRACKPAD mode
+                                    val moveDist = kotlin.math.hypot(
+                                        (latestPos.x - downPos.x).toDouble(),
+                                        (latestPos.y - downPos.y).toDouble()
+                                    ).toFloat()
+                                    val hostX = MoonlightTouchEngine.mapToHostCoordinate(cursorNormX, frameMeta.screenWidth)
+                                    val hostY = MoonlightTouchEngine.mapToHostCoordinate(cursorNormY, frameMeta.screenHeight)
+
+                                    if (moveDist <= MoonlightTouchEngine.TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD) {
+                                        val isRight = holdMs >= MoonlightTouchEngine.LONG_PRESS_TIME_THRESHOLD
+                                        triggerRipple(cursorNormX, cursorNormY, rightClick = isRight)
+                                        dispatchPacketToPc(
+                                            packet = MoonlightInputPacket(
+                                                action = if (isRight) "LONG_PRESS_RIGHT" else "TOUCH_TAP",
+                                                normalizedX = cursorNormX,
+                                                normalizedY = cursorNormY,
+                                                button = if (isRight) MoonlightMouseButton.RIGHT else MoonlightMouseButton.LEFT
+                                            ),
+                                            badgeSummary = if (isRight) "트랙패드 우클릭 ($hostX, $hostY)" else "트랙패드 좌클릭 ($hostX, $hostY)"
+                                        )
+                                    } else {
+                                        dispatchPacketToPc(
+                                            packet = MoonlightInputPacket(
+                                                action = "ABS_POS",
+                                                normalizedX = cursorNormX,
+                                                normalizedY = cursorNormY,
+                                                button = MoonlightMouseButton.NONE
+                                            ),
+                                            badgeSummary = "트랙패드 커서 이동 ($hostX, $hostY)"
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+            ) {
+                val bitmap = liveFrameBitmap
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "PC 실시간 스트리밍 화면",
+                        contentScale = ContentScale.FillBounds,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    // Realistic Simulated PC Antigravity Desktop Canvas when offline/standalone
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        drawRect(color = Color(0xFF0A0E13))
+                        // Top IDE title bar
+                        drawRect(
+                            color = Color(0xFF121820),
+                            topLeft = Offset.Zero,
+                            size = androidx.compose.ui.geometry.Size(size.width, 34.dp.toPx())
+                        )
+                        // Left file explorer pane
+                        drawRect(
+                            color = Color(0xFF0E131A),
+                            topLeft = Offset(0f, 34.dp.toPx()),
+                            size = androidx.compose.ui.geometry.Size(size.width * 0.24f, size.height - 62.dp.toPx())
+                        )
+                        // Center code editor lines
+                        val editorLeft = size.width * 0.27f
+                        for (row in 0 until 11) {
+                            val lineY = 54.dp.toPx() + row * 20.dp.toPx()
+                            if (lineY < size.height - 44.dp.toPx()) {
+                                val lineWidth = size.width * (if (row % 3 == 0) 0.52f else if (row % 2 == 0) 0.38f else 0.61f)
+                                drawRoundRect(
+                                    color = if (row == 2 || row == 6) Color(0xFF68C5B2).copy(alpha = 0.28f)
+                                    else Color(0xFFF2EFE9).copy(alpha = 0.12f),
+                                    topLeft = Offset(editorLeft, lineY),
+                                    size = androidx.compose.ui.geometry.Size(lineWidth, 8.dp.toPx()),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(4.dp.toPx(), 4.dp.toPx())
+                                )
+                            }
+                        }
+                        // Bottom Windows taskbar
+                        drawRect(
+                            color = Color(0xFF141B24),
+                            topLeft = Offset(0f, size.height - 28.dp.toPx()),
+                            size = androidx.compose.ui.geometry.Size(size.width, 28.dp.toPx())
+                        )
+                    }
+                }
+
+                // Visual Touch Ripple + PC Mouse Cursor Crosshair Overlay
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val touchPxX = (lastTouchNormX * size.width).coerceIn(0f, size.width)
+                    val touchPxY = (lastTouchNormY * size.height).coerceIn(0f, size.height)
+                    val prog = rippleProgress.value
+                    if (prog < 0.99f) {
+                        val rippleColor = if (isRightClickRipple) {
+                            Color(0xFFE8B96D)
+                        } else {
+                            Color(0xFF68C5B2)
+                        }
+                        val radius = (12.dp.toPx() + prog * 34.dp.toPx())
+                        drawCircle(
+                            color = rippleColor.copy(alpha = (1f - prog) * 0.75f),
+                            radius = radius,
+                            center = Offset(touchPxX, touchPxY),
+                            style = Stroke(width = 2.5.dp.toPx())
+                        )
+                    }
+
+                    // Live PC Cursor Indicator
+                    val cursorPxX = (cursorNormX * size.width).coerceIn(0f, size.width)
+                    val cursorPxY = (cursorNormY * size.height).coerceIn(0f, size.height)
+                    drawCircle(
+                        color = Color(0xFF000000).copy(alpha = 0.65f),
+                        radius = 9.dp.toPx(),
+                        center = Offset(cursorPxX, cursorPxY)
+                    )
+                    drawCircle(
+                        color = Color(0xFF68C5B2),
+                        radius = 6.dp.toPx(),
+                        center = Offset(cursorPxX, cursorPxY)
+                    )
+                    drawCircle(
+                        color = Color(0xFFF2EFE9),
+                        radius = 2.5.dp.toPx(),
+                        center = Offset(cursorPxX, cursorPxY)
+                    )
+                }
+
+                // Top-left floating HUD badge inside the stream viewport
+                val hostCursorX = MoonlightTouchEngine.mapToHostCoordinate(cursorNormX, frameMeta.screenWidth)
+                val hostCursorY = MoonlightTouchEngine.mapToHostCoordinate(cursorNormY, frameMeta.screenHeight)
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(10.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF000000).copy(alpha = 0.72f))
+                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                ) {
+                    Text(
+                        text = "${touchMode.label} · ${measuredFps}fps · PC($hostCursorX, $hostCursorY)",
+                        style = AntigravityTypography.TabularMetric.copy(
+                            color = AntigravityPalette.CalmSageAccent,
+                            fontSize = 11.sp
+                        )
+                    )
+                }
+            }
+
+            // 4. Live Coordinate & Gesture Feedback Banner
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AntigravityPalette.NightSurface)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = lastActionBadge,
+                    style = AntigravityTypography.SecondaryBody.copy(
+                        color = AntigravityPalette.WarmIvoryInk,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "길게 누르면 우클릭 · 2손가락 스크롤",
+                    style = AntigravityTypography.SecondaryBody.copy(
+                        color = AntigravityPalette.WarmLampGold,
+                        fontSize = 10.5.sp
+                    )
+                )
+            }
+
+            // 5. Quick Mouse & Keyboard Auxiliary Dock (48dp+ touch targets)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val quickButtons = listOf(
+                    Triple("좌클릭", "TOUCH_TAP", MoonlightMouseButton.LEFT),
+                    Triple("우클릭", "LONG_PRESS_RIGHT", MoonlightMouseButton.RIGHT),
+                    Triple("더블클릭", "DOUBLE_TAP", MoonlightMouseButton.LEFT),
+                    Triple("스크롤 ↑", "SCROLL_UP", MoonlightMouseButton.NONE),
+                    Triple("스크롤 ↓", "SCROLL_DOWN", MoonlightMouseButton.NONE),
+                    Triple("Enter", "KEY_ENTER", MoonlightMouseButton.NONE),
+                    Triple("ESC", "KEY_ESC", MoonlightMouseButton.NONE)
+                )
+
+                quickButtons.forEach { (btnLabel, actionCode, mouseBtn) ->
+                    val btnInteraction = remember(btnLabel) { MutableInteractionSource() }
+                    Box(
+                        modifier = Modifier
+                            .defaultMinSize(minWidth = 68.dp, minHeight = 48.dp)
+                            .tactilePressScale(btnInteraction, reducedMotion)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(AntigravityPalette.NightSurface)
+                            .clickable(
+                                interactionSource = btnInteraction,
+                                indication = null,
+                                role = Role.Button,
+                                onClick = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    val hx = MoonlightTouchEngine.mapToHostCoordinate(cursorNormX, frameMeta.screenWidth)
+                                    val hy = MoonlightTouchEngine.mapToHostCoordinate(cursorNormY, frameMeta.screenHeight)
+                                    when (actionCode) {
+                                        "SCROLL_UP" -> dispatchPacketToPc(
+                                            packet = MoonlightInputPacket(
+                                                action = "SCROLL",
+                                                normalizedX = cursorNormX,
+                                                normalizedY = cursorNormY,
+                                                scrollAmount = 3
+                                            ),
+                                            badgeSummary = "빠른 휠 스크롤 ↑ ($hx, $hy)"
+                                        )
+                                        "SCROLL_DOWN" -> dispatchPacketToPc(
+                                            packet = MoonlightInputPacket(
+                                                action = "SCROLL",
+                                                normalizedX = cursorNormX,
+                                                normalizedY = cursorNormY,
+                                                scrollAmount = -3
+                                            ),
+                                            badgeSummary = "빠른 휠 스크롤 ↓ ($hx, $hy)"
+                                        )
+                                        "KEY_ENTER" -> dispatchPacketToPc(
+                                            packet = MoonlightInputPacket(
+                                                action = "KEY_PRESS",
+                                                normalizedX = cursorNormX,
+                                                normalizedY = cursorNormY,
+                                                keyText = "{ENTER}"
+                                            ),
+                                            badgeSummary = "PC 키 입력 전송: Enter"
+                                        )
+                                        "KEY_ESC" -> dispatchPacketToPc(
+                                            packet = MoonlightInputPacket(
+                                                action = "KEY_PRESS",
+                                                normalizedX = cursorNormX,
+                                                normalizedY = cursorNormY,
+                                                keyText = "{ESC}"
+                                            ),
+                                            badgeSummary = "PC 키 입력 전송: ESC"
+                                        )
+                                        else -> {
+                                            triggerRipple(
+                                                normX = cursorNormX,
+                                                normY = cursorNormY,
+                                                rightClick = mouseBtn == MoonlightMouseButton.RIGHT
+                                            )
+                                            dispatchPacketToPc(
+                                                packet = MoonlightInputPacket(
+                                                    action = actionCode,
+                                                    normalizedX = cursorNormX,
+                                                    normalizedY = cursorNormY,
+                                                    button = mouseBtn
+                                                ),
+                                                badgeSummary = "PC ($hx, $hy) $btnLabel 실행"
+                                            )
+                                        }
+                                    }
+                                }
+                            )
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = btnLabel,
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = AntigravityPalette.WarmIvoryInk,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun resolveUriDisplayNameAndSize(

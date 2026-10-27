@@ -562,4 +562,42 @@ object AntigravityIcons {
             }
         }.build()
     }
+
+    val DesktopStreamCursor: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "DesktopStreamCursor",
+            defaultWidth = 20.dp,
+            defaultHeight = 20.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.85f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                // Monitor frame
+                moveTo(3f, 5f)
+                lineTo(21f, 5f)
+                lineTo(21f, 16f)
+                lineTo(13f, 16f)
+                moveTo(7f, 16f)
+                lineTo(3f, 16f)
+                lineTo(3f, 5f)
+                // Stand
+                moveTo(8f, 19.5f)
+                lineTo(12f, 19.5f)
+                // Touch/Click Pointer arrow inside screen
+                moveTo(11.5f, 10.2f)
+                lineTo(18.2f, 13.0f)
+                lineTo(15.2f, 14.3f)
+                lineTo(16.9f, 17.5f)
+                lineTo(15.3f, 18.3f)
+                lineTo(13.6f, 15.1f)
+                lineTo(11.8f, 16.9f)
+                close()
+            }
+        }.build()
+    }
 }

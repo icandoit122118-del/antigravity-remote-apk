@@ -2,6 +2,8 @@ package com.antigravity.remote.network
 
 import com.antigravity.remote.model.ChatMessage
 import com.antigravity.remote.model.MessageRole
+import com.antigravity.remote.model.MoonlightInputPacket
+import com.antigravity.remote.model.SunshineFrameMetadata
 import com.antigravity.remote.model.ToolExecutionItem
 import com.antigravity.remote.model.ToolRunStatus
 import com.antigravity.remote.model.WorkspaceSession
@@ -17,7 +19,13 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLDecoder
 import kotlin.math.roundToInt
+
+data class SunshineFramePayload(
+    val jpegBytes: ByteArray,
+    val metadata: SunshineFrameMetadata
+)
 
 data class StreamProgressFrame(
     val phaseLabel: String,
@@ -25,7 +33,8 @@ data class StreamProgressFrame(
     val elapsedSeconds: Double,
     val tokensPerSec: Double,
     val isFinished: Boolean = false,
-    val fromLiveBridge: Boolean = false
+    val fromLiveBridge: Boolean = false,
+    val syncState: LiveSyncState? = null
 )
 
 data class PcProjectFolder(
@@ -35,6 +44,7 @@ data class PcProjectFolder(
 )
 
 data class LiveSyncState(
+    val syncRevision: Long = 0L,
     val activeConversationId: String,
     val activeProjectName: String,
     val projects: List<PcProjectFolder>,
@@ -288,6 +298,7 @@ object PcBridgeClient {
         }
 
         return LiveSyncState(
+            syncRevision = root.optLong("syncRevision", 0L),
             activeConversationId = root.optString("activeConversationId", ""),
             activeProjectName = root.optString("activeProjectName", "antigravity-remote-apk"),
             projects = projects,
@@ -302,8 +313,8 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port/api/sessions")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 1000
-                    readTimeout = 2000
+                    connectTimeout = 650
+                    readTimeout = 1400
                     setRequestProperty("Accept", "application/json")
                 }
                 if (connection.responseCode in 200..299) {
@@ -334,17 +345,15 @@ object PcBridgeClient {
         host: String,
         port: Int,
         maxAttempts: Int = 3,
-        retryDelayMs: Long = 450L,
+        retryDelayMs: Long = 350L,
         onAttempt: (Int) -> Unit = {}
     ): LiveSyncState? {
         val totalAttempts = maxAttempts.coerceAtLeast(1)
         for (attempt in 1..totalAttempts) {
             onAttempt(attempt)
-            if (checkBridgeHealth(host, port)) {
-                val synced = fetchLiveSyncState(host, port)
-                if (synced != null) {
-                    return synced
-                }
+            val synced = fetchLiveSyncState(host, port)
+            if (synced != null) {
+                return synced
             }
             if (attempt < totalAttempts && retryDelayMs > 0L) {
                 delay(retryDelayMs * attempt)
@@ -640,6 +649,11 @@ object PcBridgeClient {
         null
     }
 
+    private data class BridgeChatReply(
+        val reply: String,
+        val syncState: LiveSyncState? = null
+    )
+
     private suspend fun tryRequestBridgeReply(
         host: String,
         port: Int,
@@ -648,7 +662,7 @@ object PcBridgeClient {
         engineLabel: String,
         modelId: String,
         isLocalAi: Boolean
-    ): String? = withContext(Dispatchers.IO) {
+    ): BridgeChatReply? = withContext(Dispatchers.IO) {
         for (candidate in candidateHosts(host)) {
             var connection: HttpURLConnection? = null
             try {
@@ -681,7 +695,11 @@ object PcBridgeClient {
                     ).use { it.readText() }
                     val json = JSONObject(responseText)
                     val reply = json.optString("reply").takeIf { it.isNotBlank() }
-                    if (reply != null) return@withContext reply
+                    val syncState = if (json.has("sessions")) parseSyncStateFromJson(json) else null
+                    if (reply != null) {
+                        lastHealthyHost = candidate
+                        return@withContext BridgeChatReply(reply = reply, syncState = syncState)
+                    }
                 } else if (connection.responseCode in 400..599) {
                     // 브리지가 로컬 모델 오류를 명시적으로 반환한 경우에는
                     // 다른 후보 주소를 재시도하지 않아 불필요한 지연을 막습니다.
@@ -714,7 +732,7 @@ object PcBridgeClient {
         isLocalAi: Boolean = false
     ): Flow<StreamProgressFrame> = flow {
         val startMs = System.currentTimeMillis()
-        val liveReply = tryRequestBridgeReply(
+        val bridgeOutcome = tryRequestBridgeReply(
             host = host,
             port = port,
             prompt = userPrompt,
@@ -723,6 +741,8 @@ object PcBridgeClient {
             modelId = modelId,
             isLocalAi = isLocalAi
         )
+        val liveReply = bridgeOutcome?.reply
+        val liveSyncState = bridgeOutcome?.syncState
         val isFromBridge = liveReply != null
         val authorDisplay = when {
             isLocalAi && isFromBridge -> "$engineLabel"
@@ -741,7 +761,7 @@ object PcBridgeClient {
         var tokenCounter = 0
 
         // Phase 1: 추론 단계 -> "생각중"
-        val thoughtChunks = chunkByWords(plannedThought, wordsPerChunk = 2)
+        val thoughtChunks = chunkByWords(plannedThought, wordsPerChunk = 3)
         for (chunk in thoughtChunks) {
             currentThought += chunk
             tokenCounter += 2
@@ -768,7 +788,7 @@ object PcBridgeClient {
                     fromLiveBridge = isFromBridge
                 )
             )
-            delay(85L)
+            delay(35L)
         }
 
         val thoughtElapsedStr = String.format(
@@ -800,12 +820,12 @@ object PcBridgeClient {
                 fromLiveBridge = isFromBridge
             )
         )
-        delay(650L)
+        delay(220L)
 
         val completedTool = plannedTool.copy(status = ToolRunStatus.COMPLETED)
 
         // Phase 3: 작업 마무리 단계 -> "작업 마무리중"
-        val bodyChunks = chunkByWords(plannedBody, wordsPerChunk = 2)
+        val bodyChunks = chunkByWords(plannedBody, wordsPerChunk = 3)
         for (chunk in bodyChunks) {
             currentBody += chunk
             tokenCounter += 3
@@ -834,7 +854,7 @@ object PcBridgeClient {
                     fromLiveBridge = isFromBridge
                 )
             )
-            delay(65L)
+            delay(30L)
         }
 
         // Attach code snippet if present
@@ -868,7 +888,8 @@ object PcBridgeClient {
                 elapsedSeconds = finalElapsed,
                 tokensPerSec = finalSpeed,
                 isFinished = true,
-                fromLiveBridge = isFromBridge
+                fromLiveBridge = isFromBridge,
+                syncState = liveSyncState
             )
         )
     }
@@ -987,5 +1008,125 @@ object PcBridgeClient {
                 null
             )
         }
+    }
+
+    /**
+     * Fetches a live JPEG desktop frame + Sunshine host cursor metadata from `GET /api/stream/frame`.
+     */
+    suspend fun fetchSunshineFrame(
+        host: String,
+        port: Int
+    ): SunshineFramePayload? = withContext(Dispatchers.IO) {
+        for (candidate in candidateHosts(host)) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("http://$candidate:$port/api/stream/frame")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 500
+                    readTimeout = 900
+                    useCaches = false
+                    setRequestProperty("Accept", "image/jpeg")
+                }
+                if (connection.responseCode in 200..299) {
+                    val bytes = connection.inputStream.use { it.readBytes() }
+                    if (bytes.isNotEmpty()) {
+                        val scrW = connection.getHeaderField("X-Sunshine-Screen-Width")?.toIntOrNull() ?: 1920
+                        val scrH = connection.getHeaderField("X-Sunshine-Screen-Height")?.toIntOrNull() ?: 1080
+                        val curX = connection.getHeaderField("X-Sunshine-Cursor-X")?.toIntOrNull() ?: (scrW / 2)
+                        val curY = connection.getHeaderField("X-Sunshine-Cursor-Y")?.toIntOrNull() ?: (scrH / 2)
+                        val seq = connection.getHeaderField("X-Sunshine-Frame-Seq")?.toLongOrNull() ?: 0L
+                        val rawEvent = connection.getHeaderField("X-Sunshine-Last-Event").orEmpty()
+                        val decodedEvent = try {
+                            if (rawEvent.isNotBlank()) URLDecoder.decode(rawEvent, "UTF-8") else "실시간 스트리밍 중"
+                        } catch (_: Exception) {
+                            "실시간 스트리밍 중"
+                        }
+                        lastHealthyHost = candidate
+                        return@withContext SunshineFramePayload(
+                            jpegBytes = bytes,
+                            metadata = SunshineFrameMetadata(
+                                screenWidth = scrW,
+                                screenHeight = scrH,
+                                cursorX = curX,
+                                cursorY = curY,
+                                frameSeq = seq,
+                                lastEvent = decodedEvent,
+                                isLiveFrame = true
+                            )
+                        )
+                    }
+                }
+            } catch (_: Exception) {
+                // Try next host
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        null
+    }
+
+    /**
+     * Dispatches a Moonlight-compatible touch/mouse/scroll/keyboard packet to `POST /api/stream/input`
+     * on the Sunshine host daemon (`SunshineHostDaemon.exe` via `pc-bridge-server.mjs`).
+     */
+    suspend fun sendSunshineInput(
+        host: String,
+        port: Int,
+        packet: MoonlightInputPacket
+    ): SunshineFrameMetadata? = withContext(Dispatchers.IO) {
+        val payload = JSONObject().apply {
+            put("type", packet.type)
+            put("button", packet.button)
+            put("x", packet.x.toDouble())
+            put("y", packet.y.toDouble())
+            put("refWidth", packet.refWidth.toDouble())
+            put("refHeight", packet.refHeight.toDouble())
+            put("deltaX", packet.deltaX.toDouble())
+            put("deltaY", packet.deltaY.toDouble())
+            put("scrollDelta", packet.scrollDelta)
+            if (packet.keySpec.isNotBlank()) {
+                put("keySpec", packet.keySpec)
+            }
+        }.toString()
+
+        for (candidate in candidateHosts(host)) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("http://$candidate:$port/api/stream/input")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 450
+                    readTimeout = 800
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                }
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                    writer.write(payload)
+                    writer.flush()
+                }
+                if (connection.responseCode in 200..299) {
+                    val responseText = BufferedReader(
+                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                    ).use { it.readText() }
+                    val json = JSONObject(responseText)
+                    lastHealthyHost = candidate
+                    return@withContext SunshineFrameMetadata(
+                        screenWidth = json.optInt("screenWidth", 1920),
+                        screenHeight = json.optInt("screenHeight", 1080),
+                        cursorX = json.optInt("hostX", 960),
+                        cursorY = json.optInt("hostY", 540),
+                        frameSeq = json.optLong("frameSeq", 0L),
+                        lastEvent = json.optString("lastEvent", "입력 전달됨"),
+                        isLiveFrame = true
+                    )
+                }
+            } catch (_: Exception) {
+                // Try next host
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        null
     }
 }

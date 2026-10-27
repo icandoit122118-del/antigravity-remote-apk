@@ -4,6 +4,11 @@ import com.antigravity.remote.model.AiEngineCatalog
 import com.antigravity.remote.model.AntigravityFixtures
 import com.antigravity.remote.model.BridgeConnectionState
 import com.antigravity.remote.model.InspectorViewMode
+import com.antigravity.remote.model.MoonlightFpsTarget
+import com.antigravity.remote.model.MoonlightInputPacket
+import com.antigravity.remote.model.MoonlightMouseButton
+import com.antigravity.remote.model.MoonlightTouchEngine
+import com.antigravity.remote.model.MoonlightTouchMode
 import com.antigravity.remote.network.PcBridgeClient
 import com.antigravity.remote.ui.theme.AntigravityPalette
 import kotlinx.coroutines.runBlocking
@@ -156,5 +161,86 @@ class AntigravityRemoteUnitTest {
         assertNotNull("Live bridge port 8766 should recover state on first attempt", recoveredState)
         assertEquals(listOf(1), attemptsOnLivePort)
         assertTrue(recoveredState!!.sessions.isNotEmpty())
+    }
+
+    @Test
+    fun moonlightTouchEngine_mapsDirectTouchscreenTapLongPressDoubleTapAndDrag() {
+        assertEquals(16L, MoonlightFpsTarget.FPS_60.frameIntervalMs)
+        assertEquals(8L, MoonlightFpsTarget.FPS_120.frameIntervalMs)
+        assertEquals("터치스크린 (즉시 클릭)", MoonlightTouchMode.DIRECT_TOUCHSCREEN.label)
+
+        // 1. Direct Touchscreen immediate tap-to-click at exact screen coordinate
+        val tapPacket = MoonlightTouchEngine.resolveDirectTouchGesture(
+            downX = 500f,
+            downY = 300f,
+            upX = 502f,
+            upY = 301f,
+            viewWidth = 1000f,
+            viewHeight = 600f,
+            holdDurationMs = 85L,
+            timeSinceLastTapMs = 900L,
+            lastTapX = 100f,
+            lastTapY = 100f
+        )
+        assertEquals("TOUCH_TAP", tapPacket.action)
+        assertEquals(MoonlightMouseButton.LEFT, tapPacket.mouseButton)
+        assertEquals(0.502f, tapPacket.normalizedX, 0.001f)
+        assertEquals(0.5016f, tapPacket.normalizedY, 0.001f)
+        assertEquals(963, MoonlightTouchEngine.mapToHostCoordinate(tapPacket.normalizedX, 1920))
+        assertEquals(541, MoonlightTouchEngine.mapToHostCoordinate(tapPacket.normalizedY, 1080))
+
+        // 2. Long press (>= 650ms within 30px) triggers right click
+        val rightClickPacket = MoonlightTouchEngine.resolveDirectTouchGesture(
+            downX = 250f,
+            downY = 150f,
+            upX = 255f,
+            upY = 152f,
+            viewWidth = 1000f,
+            viewHeight = 600f,
+            holdDurationMs = 700L,
+            timeSinceLastTapMs = 1200L,
+            lastTapX = 0f,
+            lastTapY = 0f
+        )
+        assertEquals("LONG_PRESS_RIGHT", rightClickPacket.action)
+        assertEquals(MoonlightMouseButton.RIGHT, rightClickPacket.mouseButton)
+
+        // 3. Double tap (<= 250ms within 60px) triggers double click
+        val doubleTapPacket = MoonlightTouchEngine.resolveDirectTouchGesture(
+            downX = 400f,
+            downY = 200f,
+            upX = 404f,
+            upY = 202f,
+            viewWidth = 1000f,
+            viewHeight = 600f,
+            holdDurationMs = 70L,
+            timeSinceLastTapMs = 180L,
+            lastTapX = 395f,
+            lastTapY = 198f
+        )
+        assertEquals("DOUBLE_TAP", doubleTapPacket.action)
+        assertEquals(MoonlightMouseButton.LEFT, doubleTapPacket.mouseButton)
+    }
+
+    @Test
+    fun pcBridgeClient_streamsSunshineFrameAndInjectsMoonlightTouchClick() = runBlocking {
+        val framePayload = PcBridgeClient.fetchSunshineFrame("127.0.0.1", 8766)
+        assertNotNull("Sunshine live frame payload from port 8766 must not be null", framePayload)
+        assertTrue("JPEG bytes must not be empty", framePayload!!.jpegBytes.isNotEmpty())
+        assertTrue("Host screen width must be positive", framePayload.metadata.screenWidth > 0)
+        assertTrue("Host screen height must be positive", framePayload.metadata.screenHeight > 0)
+
+        val clickMeta = PcBridgeClient.sendSunshineInput(
+            host = "127.0.0.1",
+            port = 8766,
+            packet = MoonlightInputPacket(
+                action = "ABS_POS",
+                normalizedX = 0.5f,
+                normalizedY = 0.5f,
+                button = MoonlightMouseButton.NONE
+            )
+        )
+        assertNotNull("Sunshine input response metadata must not be null", clickMeta)
+        assertTrue(clickMeta!!.screenWidth > 0)
     }
 }
