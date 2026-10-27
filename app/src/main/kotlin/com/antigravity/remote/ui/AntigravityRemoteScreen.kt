@@ -3481,35 +3481,18 @@ private fun AiClarificationBottomCard(
                 .padding(horizontal = 15.dp, vertical = 13.dp),
             verticalArrangement = Arrangement.spacedBy(9.dp)
         ) {
-            // Header: Marquee shimmer badge + Question title
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFF1D3530))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                ) {
-                    MarqueeLightSweepProcessText(
-                        text = "AI 확인 질문",
-                        isActive = true,
-                        reducedMotion = reducedMotion
-                    )
-                }
-                Text(
-                    text = request.questionTitle,
-                    style = AntigravityTypography.PillLabel.copy(
-                        color = AntigravityPalette.WarmIvoryInk,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-            }
+            // Question title only (no extra header badge label)
+            Text(
+                text = request.questionTitle,
+                style = AntigravityTypography.PillLabel.copy(
+                    color = AntigravityPalette.WarmIvoryInk,
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.SemiBold
+                ),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+            )
 
             // Selectable Options List with smooth tactile press interaction
             Column(

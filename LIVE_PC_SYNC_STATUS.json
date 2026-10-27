@@ -1,10 +1,10 @@
 {
   "ok": true,
-  "syncedAt": "2026-10-27T05:55:03.662Z",
+  "syncedAt": "2026-10-27T06:01:45.510Z",
   "hostname": "choidongseop",
   "activeSessionId": "ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8",
   "activeProjectName": "antigravity-remote-apk",
-  "lastMobilePrompt": "방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘",
-  "lastPcReply": "요청하신 \"방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘\" 작업을 현재 세션 및 프로젝트(antigravity-remote-apk)에 반영했습니다.",
-  "totalOverlayExchanges": 1
+  "lastMobilePrompt": "방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘 (선택 방향: 전체 빌드 + 실기기 UI 동작 검증 (권장))",
+  "lastPcReply": "요청하신 \"방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘 (선택 방향: 전체 빌드 + 실기기 UI 동작 검증 (권장))\" 작업을 현재 세션 및 프로젝트(antigravity-remote-apk)에 반영했습니다.",
+  "totalOverlayExchanges": 2
 }
