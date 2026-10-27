@@ -202,9 +202,19 @@ fun AntigravityRemoteScreen() {
         pcProjects.clear()
         pcProjects.addAll(state.projects)
         if (state.sessions.isNotEmpty()) {
-            normalSessions.clear()
-            normalSessions.addAll(state.sessions)
-            selectedNormalIndex = 0
+            val prevSelectedId = normalSessions.getOrNull(selectedNormalIndex)?.id
+            val currentSignature = normalSessions.joinToString("|") { s ->
+                "${s.id}:${s.title}:${s.messages.size}:${s.messages.lastOrNull()?.id.orEmpty()}:${s.messages.lastOrNull()?.bodyText?.hashCode() ?: 0}"
+            }
+            val nextSignature = state.sessions.joinToString("|") { s ->
+                "${s.id}:${s.title}:${s.messages.size}:${s.messages.lastOrNull()?.id.orEmpty()}:${s.messages.lastOrNull()?.bodyText?.hashCode() ?: 0}"
+            }
+            if (currentSignature != nextSignature) {
+                normalSessions.clear()
+                normalSessions.addAll(state.sessions)
+                val matchedIdx = state.sessions.indexOfFirst { it.id == prevSelectedId }
+                selectedNormalIndex = if (matchedIdx >= 0) matchedIdx else 0
+            }
         }
     }
 
@@ -221,10 +231,15 @@ fun AntigravityRemoteScreen() {
         }
     }
 
-    // Non-blocking background check & live Antigravity session sync from PC Bridge
+    // Continuous real-time PC Bridge session sync loop (every 2.5s when idle)
     LaunchedEffect(bridgeHost, bridgePortText) {
         val port = bridgePortText.toIntOrNull() ?: 8766
-        syncLiveSessionsFromBridge(bridgeHost, port)
+        while (true) {
+            if (!isStreaming && viewMode == InspectorViewMode.DEMO_NORMAL) {
+                syncLiveSessionsFromBridge(bridgeHost, port)
+            }
+            delay(2500L)
+        }
     }
 
     LaunchedEffect(currentSession.messages.size, isStreaming) {
@@ -1778,93 +1793,58 @@ private fun UnifiedSettingsDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Section 1: AI Model Selection (Default vs Local AI)
+                // Live PC Connection Status Badge
+                val isConnectedPc = connectionState == BridgeConnectionState.CONNECTED_PC
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isConnectedPc) unifiedSelectedCardBg else unifiedCardBg)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isConnectedPc) {
+                            "● PC 실시간 연결됨 ($initialHost:$initialPort · 세션 ${sessions.size}개)"
+                        } else {
+                            "○ PC 연결 대기 ($initialHost:$initialPort)"
+                        },
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = if (isConnectedPc) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.70f),
+                            fontSize = 11.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF0C0C10).copy(alpha = 0.55f))
+                            .clickable(role = Role.Button, onClick = onSyncNow)
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "동기화",
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.CalmSageAccent,
+                                fontSize = 10.5.sp
+                            ),
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                // Section 1: PC Live Session Sync & New Session Creation
                 Text(
-                    text = "1. 대화할 AI 선택",
+                    text = "1. PC 실시간 세션 연동 · 새 세션 생성",
                     style = AntigravityTypography.PillLabel.copy(
                         color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
                         fontSize = 11.5.sp
                     )
                 )
-
-                engines.forEach { engine ->
-                    val isSelected = engine.id == selectedEngineId
-                    val accent = if (engine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent
-                    val cardBg = if (isSelected) unifiedSelectedCardBg else unifiedCardBg
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 44.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(cardBg)
-                            .clickable(role = Role.RadioButton) {
-                                onSelectEngine(engine)
-                            }
-                            .padding(horizontal = 12.dp, vertical = 10.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = engine.label,
-                                style = AntigravityTypography.PillLabel.copy(
-                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 12.sp
-                                )
-                            )
-                            Text(
-                                text = if (isSelected) "사용 중" else engine.providerTag,
-                                style = AntigravityTypography.SecondaryBody.copy(
-                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
-                                    fontSize = 10.5.sp
-                                )
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(3.dp))
-                        Text(
-                            text = engine.description,
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f),
-                                fontSize = 11.sp
-                            )
-                        )
-                    }
-                }
-
-                // Section 2: PC Live Session Sync & New Session Creation
-                Spacer(modifier = Modifier.height(2.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "2. PC 실시간 세션 연동 · 새 세션 생성",
-                        style = AntigravityTypography.PillLabel.copy(
-                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
-                            fontSize = 11.5.sp
-                        )
-                    )
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(unifiedCardBg)
-                            .clickable(role = Role.Button, onClick = onSyncNow)
-                            .padding(horizontal = 10.dp, vertical = 5.dp)
-                    ) {
-                        Text(
-                            text = "실시간 동기화",
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.CalmSageAccent,
-                                fontSize = 11.sp
-                            )
-                        )
-                    }
-                }
 
                 Column(
                     modifier = Modifier.fillMaxWidth(),
@@ -1963,10 +1943,10 @@ private fun UnifiedSettingsDialog(
                     }
                 }
 
-                // Section 3: PC Project Folder Creation & PC Remote Control
+                // Section 2: PC Project Folder Creation & PC Remote Control
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                    text = "3. PC 프로젝트 폴더 생성 · 리모트 컨트롤",
+                    text = "2. PC 프로젝트 폴더 생성 · 리모트 컨트롤",
                     style = AntigravityTypography.PillLabel.copy(
                         color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
                         fontSize = 11.5.sp
@@ -2069,6 +2049,64 @@ private fun UnifiedSettingsDialog(
                                 overflow = TextOverflow.Ellipsis
                             )
                         }
+                    }
+                }
+
+                // Section 3: AI Model Selection (Default vs Local AI)
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "3. 대화할 AI 선택",
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
+                        fontSize = 11.5.sp
+                    )
+                )
+
+                engines.forEach { engine ->
+                    val isSelected = engine.id == selectedEngineId
+                    val accent = if (engine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent
+                    val cardBg = if (isSelected) unifiedSelectedCardBg else unifiedCardBg
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 44.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(cardBg)
+                            .clickable(role = Role.RadioButton) {
+                                onSelectEngine(engine)
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = engine.label,
+                                style = AntigravityTypography.PillLabel.copy(
+                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 12.sp
+                                )
+                            )
+                            Text(
+                                text = if (isSelected) "사용 중" else engine.providerTag,
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                    fontSize = 10.5.sp
+                                )
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(
+                            text = engine.description,
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f),
+                                fontSize = 11.sp
+                            )
+                        )
                     }
                 }
 

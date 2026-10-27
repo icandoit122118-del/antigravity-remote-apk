@@ -208,14 +208,18 @@ function parseTranscriptSession(convId) {
     const messages = [];
     let lastThought = '';
     let pendingTools = [];
+    let awaitingTurnResponse = false;
 
-    for (const line of lines) {
+    for (let idx = 0; idx < lines.length; idx++) {
+      const line = lines[idx];
       let step;
       try {
         step = JSON.parse(line);
       } catch {
         continue;
       }
+
+      const createdAtMs = Date.parse(step.created_at) || (idx * 1000);
 
       if (step.type === 'USER_INPUT' && step.source === 'USER_EXPLICIT') {
         const text = extractUserRequestText(step.content);
@@ -225,6 +229,7 @@ function parseTranscriptSession(convId) {
             role: 'USER',
             authorName: '나',
             timestamp: formatTimeLabel(step.created_at),
+            createdAtMs,
             bodyText: text,
             thoughtText: '',
             thoughtDurationSec: '0.0s',
@@ -232,11 +237,15 @@ function parseTranscriptSession(convId) {
           });
           lastThought = '';
           pendingTools = [];
+          awaitingTurnResponse = true;
         }
       } else if (step.type === 'PLANNER_RESPONSE' && step.source === 'MODEL') {
         if (step.thinking && typeof step.thinking === 'string') {
           lastThought = step.thinking.trim();
         }
+        const hasToolCalls = (Array.isArray(step.tool_calls) && step.tool_calls.length > 0)
+          || (Array.isArray(step.truncated_fields) && step.truncated_fields.includes('tool_calls'));
+
         if (Array.isArray(step.tool_calls) && step.tool_calls.length > 0) {
           for (const tc of step.tool_calls) {
             pendingTools.push({
@@ -251,18 +260,33 @@ function parseTranscriptSession(convId) {
         }
         const contentText = typeof step.content === 'string' ? step.content.trim() : '';
         if (contentText) {
-          const cleanBody = contentText.replace(/<agent-embed[^>]*><\/agent-embed>/gi, '').trim();
-          if (cleanBody) {
-            messages.push({
+          const cleanBody = contentText
+            .replace(/<agent-embed[^>]*><\/agent-embed>/gi, '')
+            .replace(/!\[([^\]]*)\]\([^)]+\)/g, '• [캡처 확인] $1')
+            .replace(/\[([^\]]+)\]\(file:\/\/\/[^)]+\)/g, '$1')
+            .replace(/^(?:Let's|I will|Wait|Look|Now let's)[^가-힣]*?(?=[가-힣])/s, '')
+            .trim();
+          if (cleanBody && (!hasToolCalls || awaitingTurnResponse)) {
+            const msgObj = {
               id: `live-agent-${step.step_index}`,
               role: 'AGENT',
               authorName: '안그래비티 도우미',
               timestamp: formatTimeLabel(step.created_at),
+              createdAtMs,
+               isInterimAck: hasToolCalls,
               bodyText: cleanBody,
               thoughtText: lastThought,
               thoughtDurationSec: '1.0초',
               tools: pendingTools.slice(-4)
-            });
+            };
+            // If the previous message was an interim tool-calling ack for the same user turn and this is the final response, replace the interim ack
+            const prev = messages[messages.length - 1];
+            if (!hasToolCalls && prev && prev.role === 'AGENT' && prev.isInterimAck) {
+              messages[messages.length - 1] = msgObj;
+            } else {
+              messages.push(msgObj);
+            }
+            awaitingTurnResponse = false;
             lastThought = '';
             pendingTools = [];
           }
@@ -275,6 +299,7 @@ function parseTranscriptSession(convId) {
       messages.push(item);
     }
 
+    messages.sort((a, b) => (a.createdAtMs || 0) - (b.createdAtMs || 0));
     const recentMessages = messages.slice(-20);
     if (recentMessages.length === 0) return null;
 
@@ -561,28 +586,31 @@ async function tryLocalOllamaOrLmStudio(modelId, prompt) {
 function recordOverlayExchange(sessionId, prompt, reply, toolTitle = '안그래비티 라이브 세션 동기화', toolPath = '') {
   const targetSessionId = sessionId.includes('session-') ? currentActiveSessionId : sessionId;
   const list = mobileMessagesBySession.get(targetSessionId) || [];
-  const nowIso = new Date().toISOString();
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
   list.push({
-    id: `mob-user-${Date.now()}`,
+    id: `mob-user-${nowMs}`,
     role: 'USER',
     authorName: '나',
     timestamp: formatTimeLabel(nowIso),
+    createdAtMs: nowMs,
     bodyText: prompt,
     thoughtText: '',
     thoughtDurationSec: '0.0s',
     tools: []
   });
   list.push({
-    id: `mob-agent-${Date.now() + 1}`,
+    id: `mob-agent-${nowMs + 1}`,
     role: 'AGENT',
     authorName: '안그래비티 도우미',
     timestamp: formatTimeLabel(nowIso),
+    createdAtMs: nowMs + 1,
     bodyText: reply,
     thoughtText: `PC 리모트 컨트롤 및 세션(${targetSessionId.slice(0, 8)}) 실시간 동기화 처리`,
     thoughtDurationSec: '0.5초',
     tools: [
       {
-        id: `mob-tool-${Date.now()}`,
+        id: `mob-tool-${nowMs}`,
         title: toolTitle,
         commandOrPath: toolPath || `session=${targetSessionId}`,
         outputPreview: reply,
@@ -592,6 +620,23 @@ function recordOverlayExchange(sessionId, prompt, reply, toolTitle = '안그래�
     ]
   });
   mobileMessagesBySession.set(targetSessionId, list);
+
+  try {
+    const syncReceiptPath = path.join(SCRATCH_DIR, 'antigravity-remote-apk', 'LIVE_PC_SYNC_STATUS.json');
+    fs.writeFileSync(syncReceiptPath, JSON.stringify({
+      ok: true,
+      syncedAt: nowIso,
+      hostname: os.hostname(),
+      activeSessionId: targetSessionId,
+      activeProjectName: currentActiveProjectName,
+      lastMobilePrompt: prompt,
+      lastPcReply: reply,
+      totalOverlayExchanges: list.length / 2
+    }, null, 2), 'utf8');
+  } catch {
+    // Ignore file write errors
+  }
+
   return targetSessionId;
 }
 

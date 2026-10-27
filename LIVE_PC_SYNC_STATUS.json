@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "syncedAt": "2026-10-27T04:32:54.666Z",
+  "hostname": "choidongseop",
+  "activeSessionId": "ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8",
+  "activeProjectName": "antigravity-remote-apk",
+  "lastMobilePrompt": "PC 상태와 프로젝트 폴더 목록 보여줘",
+  "lastPcReply": "• 호스트: choidongseop (win32 10.0.26200)\n• 메모리: 여유 8430 MB / 전체 32678 MB\n• 활성 프로젝트: antigravity-remote-apk\n• 프로젝트 폴더 수: 9개 (electric-engineer-2026, antigravity-remote-apk, wikidocs-170810-pdf, D2R-HUD)\n\n현재 PC 워크스페이스(`C:/Users/icand/.gemini/antigravity/scratch`) 폴더 목록입니다:\n1. electric-engineer-2026 (C:/Users/icand/.gemini/antigravity/scratch/electric-engineer-2026) — 파일 32개\n2. antigravity-remote-apk (C:/Users/icand/.gemini/antigravity/scratch/antigravity-remote-apk) — 파일 19개\n3. wikidocs-170810-pdf (C:/Users/icand/.gemini/antigravity/scratch/wikidocs-170810-pdf) — 파일 8개\n4. D2R-HUD (C:/Users/icand/.gemini/antigravity/scratch/D2R-HUD) — 파일 14개\n5. d2r-hud-re (C:/Users/icand/.gemini/antigravity/scratch/d2r-hud-re) — 파일 26개\n6. claude-code-docs-ko (C:/Users/icand/.gemini/antigravity/scratch/claude-code-docs-ko) — 파일 19개\n7. chatgpt-docs-ko (C:/Users/icand/.gemini/antigravity/scratch/chatgpt-docs-ko) — 파일 1개\n8. PokeHeartGoldUnity (C:/Users/icand/.gemini/antigravity/scratch/PokeHeartGoldUnity) — 파일 5개\n9. pokeheartgold (C:/Users/icand/.gemini/antigravity/scratch/pokeheartgold) — 파일 40개",
+  "totalOverlayExchanges": 1
+}
