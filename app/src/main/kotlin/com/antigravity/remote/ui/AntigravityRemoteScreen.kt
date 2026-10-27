@@ -586,144 +586,105 @@ private fun ChatMessageCard(
 ) {
     val isUser = message.role == MessageRole.USER
     val cardColor = if (isUser) AntigravityPalette.NightRaised else AntigravityPalette.NightSurface
+    val bubbleShape = if (isUser) {
+        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
+    } else {
+        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
+    }
 
-    Surface(
+    Box(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        color = cardColor
+        contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp)
+        Surface(
+            modifier = Modifier.widthIn(max = 310.dp),
+            shape = bubbleShape,
+            color = cardColor
         ) {
-            // Simple Author & Time Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
             ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
+                // Main Answer Text Only (No author name or timestamp)
+                Text(
+                    text = message.bodyText,
+                    style = AntigravityTypography.ChatBody
+                )
+
+                // Optional Code Block (only when code is present)
+                if (!message.codeBlockContent.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    CodeSnippetCard(
+                        language = message.codeBlockLanguage ?: "코드",
+                        code = message.codeBlockContent,
+                        isCopied = copiedBlockId == message.id,
+                        reducedMotion = reducedMotion,
+                        onCopy = { onCopyCode(message.codeBlockContent) }
+                    )
+                }
+
+                // Subtle, single collapsible toggle for details (Collapsed by default!)
+                val hasDetails = message.thoughtText.isNotBlank() || message.tools.isNotEmpty()
+                if (!isUser && hasDetails) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val detailInteraction = remember { MutableInteractionSource() }
+                    Row(
                         modifier = Modifier
-                            .size(24.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (isUser) AntigravityPalette.CalmSageDim else AntigravityPalette.WarmLampDim
-                            ),
-                        contentAlignment = Alignment.Center
+                            .defaultMinSize(minHeight = 36.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(
+                                interactionSource = detailInteraction,
+                                indication = null,
+                                role = Role.Button,
+                                onClick = onToggleDetail
+                            )
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Text(
+                            text = if (isDetailExpanded) "진행 과정 접기" else "진행 과정 보기",
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.MutedSlateInk,
+                                fontSize = 12.sp
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
                         Icon(
-                            imageVector = if (isUser) AntigravityIcons.NightCrescent else AntigravityIcons.OrbitDelta,
+                            imageVector = if (isDetailExpanded) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
                             contentDescription = null,
-                            tint = if (isUser) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmLampGold,
-                            modifier = Modifier.size(13.dp)
+                            tint = AntigravityPalette.MutedSlateInk,
+                            modifier = Modifier.size(14.dp)
                         )
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = message.authorName,
-                        style = AntigravityTypography.SectionHeader.copy(
-                            color = AntigravityPalette.WarmIvoryInk,
-                            fontWeight = FontWeight.SemiBold
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                }
 
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Text(
-                    text = message.timestamp,
-                    style = AntigravityTypography.TabularMetric,
-                    maxLines = 1
-                )
-            }
-
-            // Main Answer Text First (What everyday users care about!)
-            Spacer(modifier = Modifier.height(10.dp))
-            Text(
-                text = message.bodyText,
-                style = AntigravityTypography.ChatBody
-            )
-
-            // Optional Code Block (only when code is present)
-            if (!message.codeBlockContent.isNullOrBlank()) {
-                Spacer(modifier = Modifier.height(12.dp))
-                CodeSnippetCard(
-                    language = message.codeBlockLanguage ?: "코드",
-                    code = message.codeBlockContent,
-                    isCopied = copiedBlockId == message.id,
-                    reducedMotion = reducedMotion,
-                    onCopy = { onCopyCode(message.codeBlockContent) }
-                )
-            }
-
-            // Subtle, single collapsible toggle for details (Collapsed by default!)
-            val hasDetails = message.thoughtText.isNotBlank() || message.tools.isNotEmpty()
-            if (!isUser && hasDetails) {
-                Spacer(modifier = Modifier.height(8.dp))
-                val detailInteraction = remember { MutableInteractionSource() }
-                Row(
-                    modifier = Modifier
-                        .defaultMinSize(minHeight = 40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable(
-                            interactionSource = detailInteraction,
-                            indication = null,
-                            role = Role.Button,
-                            onClick = onToggleDetail
-                        )
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = if (isDetailExpanded) "진행 과정 접기" else "진행 과정 보기",
-                        style = AntigravityTypography.SecondaryBody.copy(
-                            color = AntigravityPalette.MutedSlateInk,
-                            fontSize = 12.sp
-                        )
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Icon(
-                        imageVector = if (isDetailExpanded) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
-                        contentDescription = null,
-                        tint = AntigravityPalette.MutedSlateInk,
-                        modifier = Modifier.size(14.dp)
-                    )
-                }
-
-                AnimatedVisibility(
-                    visible = isDetailExpanded,
-                    enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(180)),
-                    exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(160))
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 6.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(AntigravityPalette.NightGround)
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    AnimatedVisibility(
+                        visible = isDetailExpanded,
+                        enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(180)),
+                        exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(160))
                     ) {
-                        if (message.thoughtText.isNotBlank()) {
-                            Text(
-                                text = message.thoughtText,
-                                style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.5.sp)
-                            )
-                        }
-                        message.tools.forEach { tool ->
-                            Text(
-                                text = "• ${tool.title} (${tool.status.label})",
-                                style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.CalmSageAccent,
-                                    fontSize = 12.sp
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 6.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(AntigravityPalette.NightGround)
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (message.thoughtText.isNotBlank()) {
+                                Text(
+                                    text = message.thoughtText,
+                                    style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.5.sp)
                                 )
-                            )
+                            }
+                            message.tools.forEach { tool ->
+                                Text(
+                                    text = "• ${tool.title} (${tool.status.label})",
+                                    style = AntigravityTypography.SecondaryBody.copy(
+                                        color = AntigravityPalette.CalmSageAccent,
+                                        fontSize = 12.sp
+                                    )
+                                )
+                            }
                         }
                     }
                 }
