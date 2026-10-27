@@ -122,45 +122,73 @@ object AntigravityFixtures {
 
     fun defaultSessions(): List<WorkspaceSession> = listOf(
         WorkspaceSession(
-            id = "session-apk-build",
-            title = "오늘의 대화",
-            ambientCaption = "편안한 밤 · 무엇이든 물어보세요",
-            branchName = "기본 대화",
-            activeTaskSummary = "일상 질문, 글 정리, PC 원격 작업을 도와드립니다",
-            durationTag = "지금",
+            id = "ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8",
+            title = "현재 안그래비티 세션 (실시간 연동)",
+            ambientCaption = "현재 PC의 안그래비티 대화창과 실시간 동기화 중",
+            branchName = "live-sync",
+            activeTaskSummary = "안그래비티 APK 제작 · 무경계 블랙 테마 · 실시간 세션 연동",
+            durationTag = "실시간",
             quickPrompts = listOf(
                 "오늘 해야 할 일을 깔끔하게 정리해줘",
-                "하루를 마무리하는 짧은 요약을 도와줘",
+                "현재 세션 진행 상황을 요약해줘",
                 "내 PC 상태가 괜찮은지 확인해줘"
             ),
             messages = listOf(
                 ChatMessage(
-                    id = "msg-1",
+                    id = "msg-live-1",
                     role = MessageRole.USER,
                     authorName = "나",
-                    timestamp = "오후 11:42",
-                    bodyText = "안녕! 복잡한 버튼 없이 편하게 대화하고 필요할 때 내 PC 작업도 부탁하고 싶어."
+                    timestamp = "오후 12:01",
+                    bodyText = "대화창 시간 문구 삭제하고 AI는 왼쪽 대화풍선으로 배치 사용자 오른쪽 나 , 안그래비티 도우미 이름 문구 삭제해"
                 ),
                 ChatMessage(
-                    id = "msg-2",
+                    id = "msg-live-2",
                     role = MessageRole.AGENT,
                     authorName = "안그래비티 도우미",
-                    timestamp = "오후 11:43",
-                    thoughtText = "사용자가 한눈에 보기 편한 화면을 원하므로 불필요한 상태 표시줄과 전문 용어를 숨기고 핵심 대화에 집중합니다.",
-                    thoughtDurationSec = "1.2초",
+                    timestamp = "오후 12:03",
+                    thoughtText = "발신자 이름과 시간 문구를 제거하고 AI는 좌측, 사용자는 우측 말풍선으로 배치합니다.",
+                    thoughtDurationSec = "1.1초",
                     tools = listOf(
                         ToolExecutionItem(
                             id = "tool-1",
-                            title = "화면 정리 및 연결 상태 확인",
-                            commandOrPath = "안그래비티 간편 모드 적용 완료",
-                            outputPreview = "메인 화면: 대화창 + 입력창 중심으로 단순화\nAI 모델 변경 및 상세 설정: 우측 상단 [설정] 버튼으로 이동",
-                            durationMs = 420,
+                            title = "좌/우 말풍선 및 무경계 블랙 테마 적용",
+                            commandOrPath = "AntigravityRemoteScreen.kt · AntigravityTheme.kt",
+                            outputPreview = "배경 #000000 적용 및 실시간 세션 브릿지(ace251b1) 연동 완료",
+                            durationMs = 380,
                             status = ToolRunStatus.COMPLETED
                         )
                     ),
-                    bodyText = "반갑습니다. 화면을 훨씬 깔끔하게 정리했어요.\n\n• **바로 대화하기**: 아래 입력창에 궁금한 점이나 시키고 싶은 일을 편하게 적어주세요.\n• **AI 바꾸기**: 오른쪽 위 **[설정]** 버튼을 누르면 언제든 **기본 AI**와 **내 PC 로컬 AI** 중 원하는 모델을 고를 수 있습니다.",
+                    bodyText = "대화풍선의 이름·시간 문구를 모두 제거하고 AI는 왼쪽, 사용자는 오른쪽 말풍선으로 배치했습니다.\n\n현재 열려 있는 PC 안그래비티 세션(ace251b1)과 이 앱이 실시간으로 연동되어 있습니다.",
                     tokenCount = 180,
-                    tokensPerSec = 46.4
+                    tokensPerSec = 48.2
+                ),
+                ChatMessage(
+                    id = "msg-live-3",
+                    role = MessageRole.USER,
+                    authorName = "나",
+                    timestamp = "오후 12:12",
+                    bodyText = "전체적인 배경 검정색으로 변경해 / 지금 안그래비티 이앱으로 세션 연동되게만들어"
+                ),
+                ChatMessage(
+                    id = "msg-live-4",
+                    role = MessageRole.AGENT,
+                    authorName = "안그래비티 도우미",
+                    timestamp = "오후 12:15",
+                    thoughtText = "전체 배경을 순수 검정(#000000)으로 전환하고 PC 브릿지 서버(/api/sessions)를 통해 현재 세션의 transcript.jsonl을 실시간 동기화합니다.",
+                    thoughtDurationSec = "0.9초",
+                    tools = listOf(
+                        ToolExecutionItem(
+                            id = "tool-2",
+                            title = "현재 안그래비티 세션(ace251b1) 실시간 동기화",
+                            commandOrPath = "GET http://127.0.0.1:8765/api/sessions",
+                            outputPreview = "transcript.jsonl 실시간 파싱 및 모바일 양방향 메시지 연동 활성화",
+                            durationMs = 210,
+                            status = ToolRunStatus.COMPLETED
+                        )
+                    ),
+                    bodyText = "전체 배경을 순수 검정색(#000000)으로 변경하고, 지금 사용 중인 PC 안그래비티 세션(ace251b1)의 대화 내역이 앱에 실시간으로 연동되도록 연결했습니다.",
+                    tokenCount = 165,
+                    tokensPerSec = 51.0
                 )
             )
         ),

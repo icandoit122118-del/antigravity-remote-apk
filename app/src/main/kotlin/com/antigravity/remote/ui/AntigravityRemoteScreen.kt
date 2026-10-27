@@ -178,15 +178,27 @@ fun AntigravityRemoteScreen() {
 
     val listState = rememberLazyListState()
 
-    // Non-blocking background check of PC Bridge
-    LaunchedEffect(Unit) {
-        val port = bridgePortText.toIntOrNull() ?: 8765
-        val healthy = PcBridgeClient.checkBridgeHealth(bridgeHost, port)
+    suspend fun syncLiveSessionsFromBridge(host: String, port: Int) {
+        val healthy = PcBridgeClient.checkBridgeHealth(host, port)
         connectionState = if (healthy) {
             BridgeConnectionState.CONNECTED_PC
         } else {
             BridgeConnectionState.SIMULATION_ACTIVE
         }
+        if (healthy) {
+            val liveSessions = PcBridgeClient.fetchLiveSessions(host, port)
+            if (!liveSessions.isNullOrEmpty()) {
+                normalSessions.clear()
+                normalSessions.addAll(liveSessions)
+                selectedNormalIndex = 0
+            }
+        }
+    }
+
+    // Non-blocking background check & live Antigravity session sync from PC Bridge
+    LaunchedEffect(bridgeHost, bridgePortText) {
+        val port = bridgePortText.toIntOrNull() ?: 8765
+        syncLiveSessionsFromBridge(bridgeHost, port)
     }
 
     fun stopActiveStream() {
@@ -275,27 +287,6 @@ fun AntigravityRemoteScreen() {
             .navigationBarsPadding()
             .imePadding()
     ) {
-        // Elephant-style subtle ambient night glow
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(220.dp)
-        ) {
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        AntigravityPalette.CalmSageAccent.copy(alpha = 0.10f),
-                        AntigravityPalette.WarmLampGold.copy(alpha = 0.03f),
-                        Color.Transparent
-                    ),
-                    center = Offset(size.width * 0.8f, size.height * 0.2f),
-                    radius = size.width * 0.7f
-                ),
-                radius = size.width * 0.7f,
-                center = Offset(size.width * 0.8f, size.height * 0.2f)
-            )
-        }
-
         Column(
             modifier = Modifier.fillMaxSize()
         ) {
@@ -473,15 +464,10 @@ fun AntigravityRemoteScreen() {
                     customLocalModelId = newLocalModel.ifBlank { "qwen2.5-coder:7b" }
                     coroutineScope.launch {
                         connectionState = BridgeConnectionState.CONNECTING
-                        val ok = PcBridgeClient.checkBridgeHealth(
+                        syncLiveSessionsFromBridge(
                             bridgeHost,
                             bridgePortText.toIntOrNull() ?: 8765
                         )
-                        connectionState = if (ok) {
-                            BridgeConnectionState.CONNECTED_PC
-                        } else {
-                            BridgeConnectionState.SIMULATION_ACTIVE
-                        }
                         showSettingsSheet = false
                     }
                 }

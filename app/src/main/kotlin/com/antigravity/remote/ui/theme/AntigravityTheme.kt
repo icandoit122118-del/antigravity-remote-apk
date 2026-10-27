@@ -28,12 +28,12 @@ import androidx.compose.ui.unit.sp
  * All text/background pairs exceed WCAG AA (4.5:1) and primary ink exceeds AAA (13.8:1).
  */
 object AntigravityPalette {
-    val NightGround = Color(0xFF11161B)       // oklch(19% 0.02 235)
-    val NightSurface = Color(0xFF1A2229)      // oklch(24% 0.022 235) - 20dp cards
-    val NightRaised = Color(0xFF232E37)       // oklch(29% 0.025 235) - floating mini-bar & pills
-    val NightCodeWell = Color(0xFF0D1217)     // Deep terminal code well
-    val NightRule = Color(0xFF2A3742)         // 1dp hairline border
-    val NightRuleSubtle = Color(0xFF1F2A33)
+    val NightGround = Color(0xFF000000)       // Pure Black (#000000)
+    val NightSurface = Color(0xFF141417)      // Soft Dark Surface (#141417) - AI bubble & input bar
+    val NightRaised = Color(0xFF222227)       // Raised Dark Surface (#222227) - User bubble & active pill
+    val NightCodeWell = Color(0xFF09090B)     // Deep terminal code well
+    val NightRule = Color(0xFF27272A)         // Subtle rule
+    val NightRuleSubtle = Color(0xFF18181B)
 
     val WarmIvoryInk = Color(0xFFF2EFE9)      // Primary Ink (13.8:1 vs Ground)
     val MistSlateInk = Color(0xFFA7B4BE)      // Secondary Ink (6.4:1 vs Ground)

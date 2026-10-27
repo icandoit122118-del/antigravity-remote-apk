@@ -4,11 +4,13 @@ import com.antigravity.remote.model.ChatMessage
 import com.antigravity.remote.model.MessageRole
 import com.antigravity.remote.model.ToolExecutionItem
 import com.antigravity.remote.model.ToolRunStatus
+import com.antigravity.remote.model.WorkspaceSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -58,6 +60,106 @@ object PcBridgeClient {
             }
         }
         false
+    }
+
+    /**
+     * Fetches real live Antigravity sessions from `GET /api/sessions` on `pc-bridge-server.mjs`.
+     */
+    suspend fun fetchLiveSessions(host: String, port: Int): List<WorkspaceSession>? = withContext(Dispatchers.IO) {
+        for (candidate in candidateHosts(host)) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("http://$candidate:$port/api/sessions")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 1000
+                    readTimeout = 2000
+                    setRequestProperty("Accept", "application/json")
+                }
+                if (connection.responseCode in 200..299) {
+                    val responseText = BufferedReader(
+                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                    ).use { it.readText() }
+                    val root = JSONObject(responseText)
+                    val arr = root.optJSONArray("sessions") ?: JSONArray()
+                    val parsedSessions = mutableListOf<WorkspaceSession>()
+                    for (i in 0 until arr.length()) {
+                        val sObj = arr.optJSONObject(i) ?: continue
+                        val qArr = sObj.optJSONArray("quickPrompts") ?: JSONArray()
+                        val quickPrompts = mutableListOf<String>()
+                        for (q in 0 until qArr.length()) {
+                            val item = qArr.optString(q)
+                            if (item.isNotBlank()) quickPrompts.add(item)
+                        }
+                        if (quickPrompts.isEmpty()) {
+                            quickPrompts.add("오늘 해야 할 일을 깔끔하게 정리해줘")
+                        }
+
+                        val mArr = sObj.optJSONArray("messages") ?: JSONArray()
+                        val messages = mutableListOf<ChatMessage>()
+                        for (m in 0 until mArr.length()) {
+                            val mObj = mArr.optJSONObject(m) ?: continue
+                            val roleStr = mObj.optString("role", "AGENT")
+                            val role = if (roleStr.equals("USER", ignoreCase = true)) {
+                                MessageRole.USER
+                            } else {
+                                MessageRole.AGENT
+                            }
+                            val tArr = mObj.optJSONArray("tools") ?: JSONArray()
+                            val tools = mutableListOf<ToolExecutionItem>()
+                            for (t in 0 until tArr.length()) {
+                                val tObj = tArr.optJSONObject(t) ?: continue
+                                tools.add(
+                                    ToolExecutionItem(
+                                        id = tObj.optString("id", "tool-$t"),
+                                        title = tObj.optString("title", "작업 실행"),
+                                        commandOrPath = tObj.optString("commandOrPath", ""),
+                                        outputPreview = tObj.optString("outputPreview", "완료"),
+                                        durationMs = tObj.optLong("durationMs", 250L),
+                                        status = ToolRunStatus.COMPLETED
+                                    )
+                                )
+                            }
+                            messages.add(
+                                ChatMessage(
+                                    id = mObj.optString("id", "live-msg-$m"),
+                                    role = role,
+                                    authorName = mObj.optString("authorName", ""),
+                                    timestamp = mObj.optString("timestamp", ""),
+                                    thoughtText = mObj.optString("thoughtText", ""),
+                                    thoughtDurationSec = mObj.optString("thoughtDurationSec", "1.0초"),
+                                    tools = tools,
+                                    bodyText = mObj.optString("bodyText", "")
+                                )
+                            )
+                        }
+
+                        if (messages.isNotEmpty()) {
+                            parsedSessions.add(
+                                WorkspaceSession(
+                                    id = sObj.optString("id", "live-session-$i"),
+                                    title = sObj.optString("title", "현재 안그래비티 세션"),
+                                    ambientCaption = sObj.optString("ambientCaption", "실시간 연동 중"),
+                                    branchName = sObj.optString("branchName", "live-sync"),
+                                    activeTaskSummary = sObj.optString("activeTaskSummary", "현재 PC 세션 동기화"),
+                                    durationTag = sObj.optString("durationTag", "실시간"),
+                                    quickPrompts = quickPrompts,
+                                    messages = messages
+                                )
+                            )
+                        }
+                    }
+                    if (parsedSessions.isNotEmpty()) {
+                        return@withContext parsedSessions
+                    }
+                }
+            } catch (_: Exception) {
+                // Try next candidate
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        null
     }
 
     private suspend fun tryRequestBridgeReply(
