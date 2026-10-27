@@ -1,5 +1,6 @@
 package com.antigravity.remote
 
+import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -18,13 +19,20 @@ class AntigravityRemoteInstrumentedTest {
     val composeTestRule = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun simplifiedMainScreenAndSettingsDialog_areEasyAndInteractive() {
-        // 1. Main screen only shows clean header, conversation, and input bar
+    fun borderlessLeftRightChatAndSettings_workCorrectly() {
+        // 1. Main screen shows clean header and input bar without status subtitle or author/time labels
         composeTestRule.onNodeWithText("편안한 밤, 안그래비티").assertIsDisplayed()
         composeTestRule.onNodeWithText("설정").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("메시지 전송").assertIsDisplayed()
 
-        // 2. Open Settings to select Local AI and inspect advanced options
+        // Verify removed clutter (header status, author names, timestamps) does NOT exist on the main screen
+        composeTestRule.onNodeWithText("기본 AI · 내 PC와 연결됨").assertDoesNotExist()
+        composeTestRule.onNodeWithText("나").assertDoesNotExist()
+        composeTestRule.onNodeWithText("안그래비티 도우미").assertDoesNotExist()
+        composeTestRule.onNodeWithText("오후 11:42").assertDoesNotExist()
+        composeTestRule.onNodeWithText("오후 11:43").assertDoesNotExist()
+
+        // 2. Open Settings to select Local AI and inspect options
         composeTestRule.onNodeWithText("설정").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("안그래비티 설정").assertIsDisplayed()
@@ -33,8 +41,10 @@ class AntigravityRemoteInstrumentedTest {
         composeTestRule.onNodeWithText("내 PC 로컬 AI (Qwen 2.5)").performScrollTo().performClick()
         composeTestRule.waitForIdle()
 
-        // 4. Close Settings and verify header reflects Local AI selection cleanly
+        // 4. Close Settings and trigger a quick prompt chip to verify chat bubble interaction
         composeTestRule.onNodeWithText("완료").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("오늘 해야 할 일을 깔끔하게 정리해줘").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("편안한 밤, 안그래비티").assertIsDisplayed()
     }
