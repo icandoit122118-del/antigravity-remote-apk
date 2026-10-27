@@ -1215,37 +1215,6 @@ private fun SimpleElephantHeader(
                         modifier = Modifier.size(11.dp)
                     )
                 }
-                Spacer(modifier = Modifier.height(2.dp))
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(5.5.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (connectionState == BridgeConnectionState.CONNECTED_PC) {
-                                    AntigravityPalette.CalmSageAccent
-                                } else {
-                                    AntigravityPalette.WarmIvoryInk.copy(alpha = 0.38f)
-                                }
-                            )
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text(
-                        text = activeProjectFolder,
-                        style = AntigravityTypography.SecondaryBody.copy(
-                            color = if (connectionState == BridgeConnectionState.CONNECTED_PC) {
-                                AntigravityPalette.CalmSageAccent.copy(alpha = 0.82f)
-                            } else {
-                                AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f)
-                            },
-                            fontSize = 10.5.sp
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
             }
         }
 
@@ -2458,16 +2427,6 @@ private fun TopLeftSessionAndProjectPopover(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                 }
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Text(
-                                    text = folderLabel,
-                                    style = AntigravityTypography.SecondaryBody.copy(
-                                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f),
-                                        fontSize = 11.sp
-                                    ),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
                             }
 
                             Spacer(modifier = Modifier.width(10.dp))
