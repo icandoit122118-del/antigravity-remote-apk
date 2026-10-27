@@ -311,13 +311,27 @@ function parseTranscriptSession(convId) {
         ? '현재 안그래비티 세션 (실시간 연동)'
         : (firstUserMsg ? firstUserMsg.bodyText.slice(0, 20) : `세션 ${convId.slice(0, 8)}`));
 
+    let inferredFolder = customMeta?.projectFolder || (isPrimary ? currentActiveProjectName : '');
+    if (!inferredFolder) {
+      const joinedText = messages.map((m) => m.bodyText).join(' ');
+      if (joinedText.includes('전기산업기사') || joinedText.includes('electric-engineer')) {
+        inferredFolder = 'electric-engineer-2026';
+      } else if (joinedText.includes('wikidocs') || joinedText.includes('파이썬')) {
+        inferredFolder = 'wikidocs-170810-pdf';
+      } else if (joinedText.includes('D2R') || joinedText.includes('야영지') || joinedText.includes('d2r')) {
+        inferredFolder = 'D2R-HUD';
+      } else {
+        inferredFolder = currentActiveProjectName;
+      }
+    }
+
     return {
       id: convId,
       title,
       ambientCaption: customMeta?.projectPath
-        ? `프로젝트: ${customMeta.projectPath}`
-        : (isPrimary ? '현재 PC 안그래비티 세션 실시간 동기화' : `세션 ID: ${convId.slice(0, 8)}`),
-      branchName: customMeta?.projectFolder || (isPrimary ? 'live-sync' : 'session'),
+        ? `폴더: ${customMeta.projectFolder} (${customMeta.projectPath})`
+        : `폴더: ${inferredFolder}`,
+      branchName: inferredFolder,
       activeTaskSummary: isPrimary ? 'PC 안그래비티 리모트 컨트롤 및 실시간 세션 연동' : title,
       durationTag: convId === currentActiveSessionId ? '활성' : '동기화됨',
       quickPrompts: [

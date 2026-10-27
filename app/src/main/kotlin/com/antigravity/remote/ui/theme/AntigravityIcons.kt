@@ -398,4 +398,35 @@ object AntigravityIcons {
             }
         }.build()
     }
+
+    val SessionFolderStack: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "SessionFolderStack",
+            defaultWidth = 20.dp,
+            defaultHeight = 20.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                // Clean folder + session lines icon
+                moveTo(3.5f, 7f)
+                lineTo(9.5f, 7f)
+                lineTo(11.5f, 9.2f)
+                lineTo(20.5f, 9.2f)
+                lineTo(20.5f, 18.5f)
+                lineTo(3.5f, 18.5f)
+                close()
+
+                moveTo(7.5f, 13f)
+                lineTo(16.5f, 13f)
+                moveTo(7.5f, 15.8f)
+                lineTo(13.5f, 15.8f)
+            }
+        }.build()
+    }
 }

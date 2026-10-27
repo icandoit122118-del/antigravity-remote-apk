@@ -21,11 +21,20 @@ class AntigravityRemoteInstrumentedTest {
 
     @Test
     fun borderlessLeftRightChatAndSettings_workCorrectly() {
-        // 1. Main screen shows icon-only settings button, inline [+] button, inline model/reasoning text, and compact send arrow
+        // 1. Main screen shows top-left session/project icon, top-right settings icon, inline [+] button, inline model/reasoning text, and compact send arrow
+        composeTestRule.onNodeWithContentDescription("세션 및 프로젝트 폴더 열기").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("설정 열기").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("첨부 및 작업 메뉴 열기").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("메시지 전송").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("모델 및 추론 선택").assertIsDisplayed()
+
+        // 1-b. Tap top-left icon to expand the Session & Project Folder Popover from the icon
+        composeTestRule.onNodeWithContentDescription("세션 및 프로젝트 폴더 열기").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("세션 목록 (세션명 · 프로젝트 폴더명) · 새 세션 생성").assertIsDisplayed()
+        composeTestRule.onNodeWithText("+ 새 세션 생성").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("세션 및 프로젝트 폴더 열기").performClick()
+        composeTestRule.waitForIdle()
 
         // Verify removed clutter (header title, status, author names, timestamps) does NOT exist on the main screen
         assertTrue(composeTestRule.onAllNodesWithText("편안한 밤, 안그래비티").fetchSemanticsNodes().isEmpty())
@@ -61,10 +70,11 @@ class AntigravityRemoteInstrumentedTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithContentDescription("메시지 전송").assertIsDisplayed()
 
-        // 5. Open Settings via icon-only button
+        // 5. Open Settings via icon-only button and verify session creation was removed from Settings
         composeTestRule.onNodeWithContentDescription("설정 열기").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithText("안그래비티 설정").assertIsDisplayed()
+        assertTrue(composeTestRule.onAllNodesWithText("+ 새 세션 생성").fetchSemanticsNodes().isEmpty())
         composeTestRule.onNodeWithText("완료").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithContentDescription("설정 열기").assertIsDisplayed()
