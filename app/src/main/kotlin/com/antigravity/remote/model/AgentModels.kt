@@ -2,7 +2,7 @@ package com.antigravity.remote.model
 
 enum class InspectorViewMode(val label: String) {
     DEMO_NORMAL("기본 화면"),
-    WORST_CASE("긴 글자·특수문자 테스트 (Break-UI)"),
+    WORST_CASE("긴 글자·특수문자 테스트"),
     LOADING("불러오는 중 화면"),
     EMPTY("빈 대화 화면"),
     ERROR("연결 확인 화면")
@@ -10,15 +10,16 @@ enum class InspectorViewMode(val label: String) {
 
 enum class BridgeConnectionState(val badgeLabel: String) {
     CONNECTED_PC("내 PC와 연결됨"),
+    AUTO_RESYNCING("PC 자동 재동기화 중..."),
     SIMULATION_ACTIVE("모바일 단독 모드"),
     CONNECTING("연결 확인 중..."),
     DISCONNECTED_ERROR("연결 확인 필요")
 }
 
 enum class ReasoningEffort(val label: String, val korDesc: String) {
-    LOW("Low", "빠른 응답"),
-    MEDIUM("Medium", "균형 추론"),
-    HIGH("High", "심층 추론")
+    LOW("낮음", "빠른 응답"),
+    MEDIUM("보통", "균형 추론"),
+    HIGH("높음", "심층 추론")
 }
 
 data class AiEngineOption(
@@ -39,7 +40,7 @@ object AiEngineCatalog {
             label = "Gemini 4 Argon",
             shortName = "Gemini 4 Argon",
             modelId = "gemini-4-argon",
-            providerTag = "New · 기본",
+            providerTag = "신규 · 기본",
             description = "안그래비티 기본 최신 멀티모달·코딩 에이전트 모델입니다.",
             isLocal = false,
             defaultPort = 8766
@@ -49,7 +50,7 @@ object AiEngineCatalog {
             label = "Gemini 3.8 Flash",
             shortName = "Gemini 3.8 Flash",
             modelId = "gemini-3.8-flash",
-            providerTag = "Fast",
+            providerTag = "빠른 응답",
             description = "빠른 응답과 실시간 대화·요약에 최적화된 경량 모델입니다.",
             isLocal = false,
             defaultPort = 8766
@@ -59,7 +60,7 @@ object AiEngineCatalog {
             label = "Claude Sonnet 5.5",
             shortName = "Claude Sonnet 5.5",
             modelId = "claude-sonnet-5.5",
-            providerTag = "New",
+            providerTag = "신규",
             description = "정교한 코드 작성과 UI/UX 설계에 강한 밸런스 모델입니다.",
             isLocal = false,
             defaultPort = 8766
@@ -69,7 +70,7 @@ object AiEngineCatalog {
             label = "Claude Opus 5.5",
             shortName = "Claude Opus 5.5",
             modelId = "claude-opus-5.5",
-            providerTag = "New · 심층",
+            providerTag = "신규 · 심층",
             description = "복합 아키텍처 설계와 깊은 추론을 수행하는 플래그십 모델입니다.",
             isLocal = false,
             defaultPort = 8766
@@ -79,9 +80,19 @@ object AiEngineCatalog {
             label = "GPT-OSS 120B",
             shortName = "GPT-OSS 120B",
             modelId = "gpt-oss-120b",
-            providerTag = "Open Weight",
+            providerTag = "오픈 웨이트",
             description = "대규모 오픈 웨이트 기반 범용 추론 및 작업 모델입니다.",
             isLocal = false,
+            defaultPort = 8766
+        ),
+        AiEngineOption(
+            id = "engine-local-gemma4",
+            label = "내 PC 로컬 AI (Gemma 4 26B A4B)",
+            shortName = "Gemma 4 26B A4B",
+            modelId = "gemma4-26b-a4b-local",
+            providerTag = "내 PC · Ollama",
+            description = "현재 PC에 설치된 Gemma 4 로컬 모델을 사용합니다. 응답은 PC 브릿지를 통해 처리됩니다.",
+            isLocal = true,
             defaultPort = 8766
         ),
         AiEngineOption(
@@ -92,7 +103,7 @@ object AiEngineCatalog {
             providerTag = "로컬 실행",
             description = "외부 서버 전송 없이 내 PC 안에서 안전하게 답변과 코드를 생성합니다.",
             isLocal = true,
-            defaultPort = 11434
+            defaultPort = 8766
         ),
         AiEngineOption(
             id = "engine-local-deepseek",
@@ -102,7 +113,7 @@ object AiEngineCatalog {
             providerTag = "로컬 추론형",
             description = "복잡한 고민이나 단계별 계획이 필요할 때 차분하게 생각한 뒤 답합니다.",
             isLocal = true,
-            defaultPort = 11434
+            defaultPort = 8766
         ),
         AiEngineOption(
             id = "engine-local-llama",
@@ -112,7 +123,7 @@ object AiEngineCatalog {
             providerTag = "로컬 대화형",
             description = "일상적인 대화와 글 다듬기에 적합한 가벼운 로컬 AI 모델입니다.",
             isLocal = true,
-            defaultPort = 1234
+            defaultPort = 8766
         )
     )
 }
@@ -227,7 +238,7 @@ object AntigravityFixtures {
                         ToolExecutionItem(
                             id = "tool-2",
                             title = "현재 안그래비티 세션(ace251b1) 실시간 동기화",
-                            commandOrPath = "GET http://127.0.0.1:8765/api/sessions",
+                            commandOrPath = "GET http://127.0.0.1:8766/api/sessions",
                             outputPreview = "transcript.jsonl 실시간 파싱 및 모바일 양방향 메시지 연동 활성화",
                             durationMs = 210,
                             status = ToolRunStatus.COMPLETED

@@ -70,10 +70,11 @@ class AntigravityRemoteInstrumentedTest {
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithContentDescription("메시지 전송").assertIsDisplayed()
 
-        // 5. Open Settings via icon-only button and verify session creation was removed from Settings
+        // 5. Open Settings via icon-only button and verify title is "설정" and auto-resync control is shown
         composeTestRule.onNodeWithContentDescription("설정 열기").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("안그래비티 설정").assertIsDisplayed()
+        composeTestRule.onNodeWithText("설정").assertIsDisplayed()
+        composeTestRule.onNodeWithText("PC 동기화 끊김 시 자동 재동기화").assertIsDisplayed()
         assertTrue(composeTestRule.onAllNodesWithText("+ 새 세션 생성").fetchSemanticsNodes().isEmpty())
         composeTestRule.onNodeWithText("완료").performClick()
         composeTestRule.waitForIdle()

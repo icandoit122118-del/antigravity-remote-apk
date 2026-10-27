@@ -41,15 +41,27 @@ data class LiveSyncState(
     val sessions: List<WorkspaceSession>
 )
 
+data class SystemPromptBundle(
+    val geminiMd: String,
+    val designMotionMd: String,
+    val claudeMd: String,
+    val updatedAt: String = "방금",
+    val syncState: LiveSyncState? = null
+)
+
 /**
  * Handles both real LAN communication with `pc-bridge-server.mjs` (HTTP/JSON + chunked streaming)
  * and the built-in interactive Kotlin Coroutines Token Streaming Engine when away from the PC.
  */
 object PcBridgeClient {
 
-    private fun candidateHosts(primaryHost: String): List<String> {
+    @Volatile
+    private var lastHealthyHost: String? = null
+
+    fun candidateHosts(primaryHost: String): List<String> {
         val clean = primaryHost.trim().ifBlank { "127.0.0.1" }
-        return listOf(clean, "127.0.0.1", "10.0.2.2").distinct()
+        val remembered = lastHealthyHost?.takeIf { it.isNotBlank() }
+        return listOfNotNull(clean, remembered, "127.0.0.1", "10.0.2.2").distinct()
     }
 
     suspend fun checkBridgeHealth(host: String, port: Int): Boolean = withContext(Dispatchers.IO) {
@@ -59,11 +71,12 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port/api/status")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 900
-                    readTimeout = 900
+                    connectTimeout = 550
+                    readTimeout = 650
                     setRequestProperty("Accept", "application/json")
                 }
                 if (connection.responseCode in 200..299) {
+                    lastHealthyHost = candidate
                     return@withContext true
                 }
             } catch (_: Exception) {
@@ -282,7 +295,10 @@ object PcBridgeClient {
                         InputStreamReader(connection.inputStream, Charsets.UTF_8)
                     ).use { it.readText() }
                     val state = parseSyncStateFromJson(JSONObject(responseText))
-                    if (state.sessions.isNotEmpty()) return@withContext state
+                    if (state.sessions.isNotEmpty()) {
+                        lastHealthyHost = candidate
+                        return@withContext state
+                    }
                 }
             } catch (_: Exception) {
                 // Try next
@@ -293,37 +309,71 @@ object PcBridgeClient {
         null
     }
 
+    /**
+     * Automatically attempts to recover PC synchronization when a disconnect is detected.
+     * Probes candidate hosts up to [maxAttempts] times with [retryDelayMs] backoff and invokes
+     * [onAttempt] before each retry so the UI can show live auto-resync progress.
+     */
+    suspend fun autoResyncWithRetry(
+        host: String,
+        port: Int,
+        maxAttempts: Int = 3,
+        retryDelayMs: Long = 450L,
+        onAttempt: (Int) -> Unit = {}
+    ): LiveSyncState? {
+        val totalAttempts = maxAttempts.coerceAtLeast(1)
+        for (attempt in 1..totalAttempts) {
+            onAttempt(attempt)
+            if (checkBridgeHealth(host, port)) {
+                val synced = fetchLiveSyncState(host, port)
+                if (synced != null) {
+                    return synced
+                }
+            }
+            if (attempt < totalAttempts && retryDelayMs > 0L) {
+                delay(retryDelayMs * attempt)
+            }
+        }
+        return null
+    }
+
     private suspend fun postJsonForSyncState(
         host: String,
         port: Int,
         endpoint: String,
         payloadObj: JSONObject
     ): LiveSyncState? = withContext(Dispatchers.IO) {
-        for (candidate in candidateHosts(host)) {
-            var connection: HttpURLConnection? = null
-            try {
-                val url = URL("http://$candidate:$port$endpoint")
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 2000
-                    readTimeout = 16000
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        for (retryPass in 0..1) {
+            for (candidate in candidateHosts(host)) {
+                var connection: HttpURLConnection? = null
+                try {
+                    val url = URL("http://$candidate:$port$endpoint")
+                    connection = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "POST"
+                        connectTimeout = 2000
+                        readTimeout = 16000
+                        doOutput = true
+                        setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                    }
+                    OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                        writer.write(payloadObj.toString())
+                        writer.flush()
+                    }
+                    if (connection.responseCode in 200..299) {
+                        val responseText = BufferedReader(
+                            InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                        ).use { it.readText() }
+                        lastHealthyHost = candidate
+                        return@withContext parseSyncStateFromJson(JSONObject(responseText))
+                    }
+                } catch (_: Exception) {
+                    // Try next
+                } finally {
+                    connection?.disconnect()
                 }
-                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
-                    writer.write(payloadObj.toString())
-                    writer.flush()
-                }
-                if (connection.responseCode in 200..299) {
-                    val responseText = BufferedReader(
-                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
-                    ).use { it.readText() }
-                    return@withContext parseSyncStateFromJson(JSONObject(responseText))
-                }
-            } catch (_: Exception) {
-                // Try next
-            } finally {
-                connection?.disconnect()
+            }
+            if (retryPass == 0) {
+                delay(300L)
             }
         }
         null
@@ -432,6 +482,148 @@ object PcBridgeClient {
         }
     )
 
+    fun defaultSystemPromptBundle(): SystemPromptBundle = SystemPromptBundle(
+        geminiMd = """
+            ## 맞춤형 응답·말투·작업 정리 원칙
+            1. **UI와 역할 분담 (중복 중계 금지)**:
+               - 도구 실행 내역과 진행 상태는 호스트 UI에 자동 표시되므로, 본문에서 기계적인 복창이나 사전 계획 번호표를 쓰지 마세요.
+               - 작업 시작 시에는 **1문장으로 핵심 의도만 담백하게 짚고 같은 턴에서 즉시 도구를 실행해 작업을 끝까지 완료**하세요.
+               - 파일을 읽거나 명령을 실행하는 개별 도구 호출 과정을 본문에 일일이 나열하지 마세요.
+            2. **답변 말투 및 결과 정리 포맷**:
+               - 군더더기 인사말·마무리 치레를 빼고, 동료 엔지니어에게 브리핑하듯 **현재 시제·능동태·단문(`~합니다`/`~했습니다`)**으로 간결하게 작성하세요.
+               - **단순 질문·단순 수정**: 결론 또는 조치 결과와 클릭 가능한 파일 링크만 1~3줄로 바로 제시합니다.
+               - **복합 수정·구현 작업**:
+                 - **한 줄 결론**: 무엇을 어떻게 바꿨는지 핵심 결과 1줄
+                 - **주요 변경**: 변경 요지 불릿 (중첩 최소화)
+                 - **검증**: 실행한 테스트·UI/동작 확인 결과 1줄 (미검증 항목은 구분해 명시)
+
+            ## Hallmark for Windows and mobile interfaces
+            When building Windows or mobile app UI, read hallmark-apps/SKILL.md before applying Hallmark, then read hallmark/SKILL.md and its App screens guidance. Preserve existing design systems unless redesign is requested.
+
+            ## 디자인·모션 스킬 전부 사용: 기획·구상 직후 단계
+            화면이 있는 소프트웨어를 새로 만들거나 화면을 크게 바꿀 때는 기획 직후 D0~D5 역할·충돌 우선순위·결과표대로 진행한다. 시각 방향은 D1 한 곳에서만 정하고 나머지 스킬은 점검·보강·다듬기에 쓴다.
+        """.trimIndent(),
+        designMotionMd = """
+            # 디자인·모션 단계 (D0~D5)
+            - D0 참고 자료: 사용자가 제공한 레퍼런스만 반영 (무단 로그인·설치 금지)
+            - D1 방향 결정: 기존 DESIGN.md 또는 hallmark + hallmark-apps 단일 결정
+            - D2 입력·점검표: ui-ux-pro-max (프로젝트 실제 스택 기준), frontend-design, design-taste-frontend
+            - D3 움직임·상호작용: emil-design-eng, animate, animation-performance, mobile-native, apple-design, break-ui
+            - D4 구축 후 검토·다듬기: impeccable (문서 지침 모드), review-animations, improve-animations
+            - D5 영상·모션 산출물: remotion-best-practices 또는 hyperframes
+        """.trimIndent(),
+        claudeMd = """
+            ## Chief of staff & Engineering Flow
+            - Always reply in Korean, polite 합니다체. Dry, calm, exact.
+            - Conclusion first, then only evidence that matters, then the needed decision or next step.
+            - No padding, praise, restating the request, or unsupported claims.
+            - Preserve existing design systems and verify with real native build/runtime checks.
+        """.trimIndent(),
+        updatedAt = "기본값 로드됨"
+    )
+
+    fun applyPresetSnippet(currentText: String, snippetText: String): String {
+        val cleanSnippet = snippetText.trim()
+        if (cleanSnippet.isEmpty()) return currentText
+        if (currentText.contains(cleanSnippet)) return currentText
+        val trimmedBase = currentText.trimEnd()
+        return if (trimmedBase.isEmpty()) cleanSnippet else "$trimmedBase\n$cleanSnippet"
+    }
+
+    fun isOptimalPromptDensity(content: String): Boolean {
+        val lines = if (content.isEmpty()) 0 else content.lines().size
+        return lines in 1..100
+    }
+
+    suspend fun fetchSystemPrompts(
+        host: String,
+        port: Int
+    ): SystemPromptBundle? = withContext(Dispatchers.IO) {
+        val defaults = defaultSystemPromptBundle()
+        for (candidate in candidateHosts(host)) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("http://$candidate:$port/api/system-prompt")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 900
+                    readTimeout = 2000
+                    setRequestProperty("Accept", "application/json")
+                }
+                if (connection.responseCode in 200..299) {
+                    val responseText = BufferedReader(
+                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                    ).use { it.readText() }
+                    val json = JSONObject(responseText)
+                    lastHealthyHost = candidate
+                    return@withContext SystemPromptBundle(
+                        geminiMd = json.optString("geminiMd").ifBlank { defaults.geminiMd },
+                        designMotionMd = json.optString("designMotionMd").ifBlank { defaults.designMotionMd },
+                        claudeMd = json.optString("claudeMd").ifBlank { defaults.claudeMd },
+                        updatedAt = json.optString("updatedAt", "실시간 동기화됨")
+                    )
+                }
+            } catch (_: Exception) {
+                // Try next host
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        null
+    }
+
+    suspend fun saveSystemPrompt(
+        host: String,
+        port: Int,
+        target: String,
+        content: String,
+        sessionId: String
+    ): SystemPromptBundle? = withContext(Dispatchers.IO) {
+        val defaults = defaultSystemPromptBundle()
+        for (candidate in candidateHosts(host)) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("http://$candidate:$port/api/system-prompt")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 1500
+                    readTimeout = 4500
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                }
+                val payload = JSONObject().apply {
+                    put("target", target)
+                    put("content", content)
+                    put("sessionId", sessionId)
+                }.toString()
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                    writer.write(payload)
+                    writer.flush()
+                }
+                if (connection.responseCode in 200..299) {
+                    val responseText = BufferedReader(
+                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                    ).use { it.readText() }
+                    val json = JSONObject(responseText)
+                    val syncState = if (json.has("sessions")) parseSyncStateFromJson(json) else null
+                    lastHealthyHost = candidate
+                    return@withContext SystemPromptBundle(
+                        geminiMd = json.optString("geminiMd").ifBlank { defaults.geminiMd },
+                        designMotionMd = json.optString("designMotionMd").ifBlank { defaults.designMotionMd },
+                        claudeMd = json.optString("claudeMd").ifBlank { defaults.claudeMd },
+                        updatedAt = json.optString("updatedAt", "방금 저장됨"),
+                        syncState = syncState
+                    )
+                }
+            } catch (_: Exception) {
+                // Try next host
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        null
+    }
+
     private suspend fun tryRequestBridgeReply(
         host: String,
         port: Int,
@@ -447,8 +639,10 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port/api/chat")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
-                    connectTimeout = 1200
-                    readTimeout = 4500
+                    connectTimeout = 800
+                    // Gemma 4 26B는 첫 로드나 긴 답변에서 수 초 이상 걸릴 수 있습니다.
+                    // 짧은 고정 타임아웃으로 가짜 폴백을 만들지 않고 실제 오류를 표시합니다.
+                    readTimeout = 30000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 }
@@ -472,6 +666,10 @@ object PcBridgeClient {
                     val json = JSONObject(responseText)
                     val reply = json.optString("reply").takeIf { it.isNotBlank() }
                     if (reply != null) return@withContext reply
+                } else if (connection.responseCode in 400..599) {
+                    // 브리지가 로컬 모델 오류를 명시적으로 반환한 경우에는
+                    // 다른 후보 주소를 재시도하지 않아 불필요한 지연을 막습니다.
+                    return@withContext null
                 }
             } catch (_: Exception) {
                 // Try next candidate
@@ -683,7 +881,7 @@ object PcBridgeClient {
     ): String {
         val routeNote = when {
             isLocalAi && isFromBridge -> "선택된 로컬 AI 모델($engineLabel · $modelId)을 PC 브릿지($host:$port)를 통해 호출했습니다."
-            isLocalAi -> "선택된 로컬 AI 엔진($engineLabel · $modelId) 온디바이스 추론 파이프라인으로 요청을 처리합니다."
+            isLocalAi -> "PC 브릿지에 연결되지 않아 로컬 AI($modelId) 응답을 확인하지 못했습니다."
             isFromBridge -> "PC 브릿지($host:$port)로부터 실시간 실행 컨텍스트를 수신했습니다."
             else -> "내장 라이브 스트리밍 엔진을 통해 요청을 분석합니다."
         }
@@ -704,7 +902,7 @@ object PcBridgeClient {
                 id = "tool-$messageId",
                 title = "로컬 AI 모델 추론 실행 ($modelId)",
                 commandOrPath = if (isFromBridge) "POST http://$host:$port/api/chat [model=$modelId, local=true]" else "local-ai://inference/$modelId",
-                outputPreview = "Engine: Local AI ($modelId)\nQuantization: Q4_K_M · Context: 8192 tokens\nStatus: Local Inference Complete",
+                outputPreview = "Engine: Local AI ($modelId)\nRoute: PC bridge → Ollama /api/chat\nStatus: Bridge unavailable; inference not confirmed",
                 durationMs = 380
             )
         }
@@ -750,7 +948,7 @@ object PcBridgeClient {
         }
         if (isLocalAi) {
             return Triple(
-                "[$engineLabel] 요청하신 내용(\"$prompt\")을 정리했습니다.\n\n내 컴퓨터의 로컬 AI 모델을 사용해 외부 전송 없이 안전하게 답변을 작성했습니다. 다른 AI로 바꾸고 싶다면 오른쪽 위 [설정] 버튼을 눌러보세요.",
+                "[로컬 AI 연결 실패]\n\nPC 브릿지 또는 Ollama에서 실제 응답을 받지 못했습니다. 설정에서 PC 연결 주소·포트와 로컬 모델명을 확인한 뒤 다시 시도해 주세요. 이 답변은 로컬 모델이 생성한 결과가 아닙니다.",
                 null,
                 null
             )

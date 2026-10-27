@@ -117,6 +117,7 @@ import com.antigravity.remote.model.WorkspaceSession
 import com.antigravity.remote.network.LiveSyncState
 import com.antigravity.remote.network.PcBridgeClient
 import com.antigravity.remote.network.PcProjectFolder
+import com.antigravity.remote.network.SystemPromptBundle
 import com.antigravity.remote.ui.theme.AntigravityIcons
 import com.antigravity.remote.ui.theme.AntigravityPalette
 import com.antigravity.remote.ui.theme.AntigravityTypography
@@ -143,8 +144,13 @@ fun AntigravityRemoteScreen() {
     var bridgeHost by rememberSaveable { mutableStateOf("127.0.0.1") }
     var bridgePortText by rememberSaveable { mutableStateOf("8766") }
     var connectionState by remember { mutableStateOf(BridgeConnectionState.SIMULATION_ACTIVE) }
+    var autoSyncEnabled by rememberSaveable { mutableStateOf(true) }
+    var autoSyncRetryCount by remember { mutableIntStateOf(0) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
     var showSessionProjectPopup by rememberSaveable { mutableStateOf(false) }
+    var showSystemPromptEditor by rememberSaveable { mutableStateOf(false) }
+    var systemPromptBundle by remember { mutableStateOf(PcBridgeClient.defaultSystemPromptBundle()) }
+    var systemPromptStatusBanner by remember { mutableStateOf("") }
 
     // AI Engine, Reasoning Effort & Local AI Selection
     val engineOptions = remember { AiEngineCatalog.options }
@@ -152,13 +158,13 @@ fun AntigravityRemoteScreen() {
     var selectedReasoning by rememberSaveable { mutableStateOf(ReasoningEffort.MEDIUM) }
     var showModelReasoningPopup by rememberSaveable { mutableStateOf(false) }
     var showPlusMenuPopup by rememberSaveable { mutableStateOf(false) }
-    var customLocalModelId by rememberSaveable { mutableStateOf("qwen2.5-coder:7b") }
+    var customLocalModelId by rememberSaveable { mutableStateOf("") }
     val activeEngine by remember(selectedEngineId) {
         derivedStateOf {
             engineOptions.find { it.id == selectedEngineId } ?: engineOptions.first()
         }
     }
-    val effectiveModelId = if (activeEngine.isLocal && customLocalModelId.isNotBlank() && selectedEngineId == "engine-local-qwen") {
+    val effectiveModelId = if (activeEngine.isLocal && customLocalModelId.isNotBlank()) {
         customLocalModelId
     } else {
         activeEngine.modelId
@@ -216,6 +222,7 @@ fun AntigravityRemoteScreen() {
     fun applyLiveSyncState(state: LiveSyncState?) {
         if (state == null) return
         connectionState = BridgeConnectionState.CONNECTED_PC
+        autoSyncRetryCount = 0
         activePcProjectName = state.activeProjectName
         pcProjects.clear()
         pcProjects.addAll(state.projects)
@@ -236,27 +243,68 @@ fun AntigravityRemoteScreen() {
         }
     }
 
-    suspend fun syncLiveSessionsFromBridge(host: String, port: Int) {
+    suspend fun syncLiveSessionsFromBridge(
+        host: String,
+        port: Int,
+        retryAttemptsOnDisconnect: Int = 1
+    ): Boolean {
         val healthy = PcBridgeClient.checkBridgeHealth(host, port)
-        connectionState = if (healthy) {
-            BridgeConnectionState.CONNECTED_PC
-        } else {
-            BridgeConnectionState.SIMULATION_ACTIVE
-        }
         if (healthy) {
+            connectionState = BridgeConnectionState.CONNECTED_PC
+            autoSyncRetryCount = 0
             val state = PcBridgeClient.fetchLiveSyncState(host, port)
             applyLiveSyncState(state)
+            if (systemPromptBundle.updatedAt == "기본값 로드됨") {
+                val livePrompts = PcBridgeClient.fetchSystemPrompts(host, port)
+                if (livePrompts != null) {
+                    systemPromptBundle = livePrompts
+                }
+            }
+            return true
+        }
+
+        if (autoSyncEnabled) {
+            connectionState = BridgeConnectionState.AUTO_RESYNCING
+            val recovered = PcBridgeClient.autoResyncWithRetry(
+                host = host,
+                port = port,
+                maxAttempts = retryAttemptsOnDisconnect.coerceAtLeast(1),
+                retryDelayMs = 300L,
+                onAttempt = { autoSyncRetryCount += 1 }
+            )
+            if (recovered != null) {
+                applyLiveSyncState(recovered)
+                return true
+            }
+            connectionState = BridgeConnectionState.AUTO_RESYNCING
+        } else {
+            connectionState = BridgeConnectionState.SIMULATION_ACTIVE
+        }
+        return false
+    }
+
+    fun triggerAutoResyncIfDisconnected() {
+        if (!autoSyncEnabled) return
+        val port = bridgePortText.toIntOrNull() ?: 8766
+        connectionState = BridgeConnectionState.AUTO_RESYNCING
+        coroutineScope.launch {
+            syncLiveSessionsFromBridge(bridgeHost, port, retryAttemptsOnDisconnect = 2)
         }
     }
 
-    // Continuous real-time PC Bridge session sync loop (every 2.5s when idle)
-    LaunchedEffect(bridgeHost, bridgePortText) {
+    // Continuous real-time PC Bridge session sync & auto-resync loop
+    LaunchedEffect(bridgeHost, bridgePortText, autoSyncEnabled) {
         val port = bridgePortText.toIntOrNull() ?: 8766
         while (true) {
             if (!isStreaming && viewMode == InspectorViewMode.DEMO_NORMAL) {
-                syncLiveSessionsFromBridge(bridgeHost, port)
+                syncLiveSessionsFromBridge(bridgeHost, port, retryAttemptsOnDisconnect = 1)
             }
-            delay(2500L)
+            val nextDelayMs = if (connectionState == BridgeConnectionState.AUTO_RESYNCING && autoSyncEnabled) {
+                1800L
+            } else {
+                2500L
+            }
+            delay(nextDelayMs)
         }
     }
 
@@ -400,6 +448,9 @@ fun AntigravityRemoteScreen() {
                     activeStreamingAgentMsgId = null
                     steeringStatusLabel = ""
                     pendingSteerNotes.clear()
+                    if (!frame.fromLiveBridge) {
+                        triggerAutoResyncIfDisconnected()
+                    }
                 }
             }
         }
@@ -521,6 +572,8 @@ fun AntigravityRemoteScreen() {
             )
             if (state != null) {
                 applyLiveSyncState(state)
+            } else {
+                triggerAutoResyncIfDisconnected()
             }
         }
     }
@@ -582,6 +635,7 @@ fun AntigravityRemoteScreen() {
             if (state != null) {
                 applyLiveSyncState(state)
             } else {
+                triggerAutoResyncIfDisconnected()
                 val cur = targetList[idx]
                 targetList[idx] = cur.copy(
                     messages = cur.messages.map { m ->
@@ -660,7 +714,7 @@ fun AntigravityRemoteScreen() {
                                     delay(350L)
                                     val ok = PcBridgeClient.checkBridgeHealth(
                                         bridgeHost,
-                                        bridgePortText.toIntOrNull() ?: 8765
+                                        bridgePortText.toIntOrNull() ?: 8766
                                     )
                                     if (ok) {
                                         connectionState = BridgeConnectionState.CONNECTED_PC
@@ -849,6 +903,22 @@ fun AntigravityRemoteScreen() {
                     showPlusMenuPopup = false
                     pushFullWorkToGitHub()
                 },
+                onOpenSystemPromptEditor = {
+                    showPlusMenuPopup = false
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    systemPromptStatusBanner = ""
+                    showSystemPromptEditor = true
+                    coroutineScope.launch {
+                        val livePrompts = PcBridgeClient.fetchSystemPrompts(bridgeHost, port)
+                        if (livePrompts != null) {
+                            connectionState = BridgeConnectionState.CONNECTED_PC
+                            systemPromptBundle = livePrompts.copy(
+                                updatedAt = "${livePrompts.updatedAt}#${System.currentTimeMillis()}"
+                            )
+                            systemPromptStatusBanner = "PC 실시간 프롬프트 동기화됨"
+                        }
+                    }
+                },
                 onToggleModelPopup = {
                     showModelReasoningPopup = !showModelReasoningPopup
                     if (showModelReasoningPopup) showPlusMenuPopup = false
@@ -964,6 +1034,8 @@ fun AntigravityRemoteScreen() {
                             val state = PcBridgeClient.performSessionAction(bridgeHost, port, sessionId, action)
                             if (state != null) {
                                 applyLiveSyncState(state)
+                            } else {
+                                triggerAutoResyncIfDisconnected()
                             }
                         }
                     },
@@ -991,6 +1063,8 @@ fun AntigravityRemoteScreen() {
                             val state = PcBridgeClient.performProjectAction(bridgeHost, port, folderName, action)
                             if (state != null) {
                                 applyLiveSyncState(state)
+                            } else {
+                                triggerAutoResyncIfDisconnected()
                             }
                         }
                     },
@@ -1022,6 +1096,7 @@ fun AntigravityRemoteScreen() {
                                 )
                                 normalSessions.add(0, newSession)
                                 selectedNormalIndex = 0
+                                triggerAutoResyncIfDisconnected()
                             }
                             viewMode = InspectorViewMode.DEMO_NORMAL
                             showSessionProjectPopup = false
@@ -1041,6 +1116,7 @@ fun AntigravityRemoteScreen() {
                             } else {
                                 pcProjects.add(0, PcProjectFolder(folderName, "", 1))
                                 activePcProjectName = folderName
+                                triggerAutoResyncIfDisconnected()
                             }
                             viewMode = InspectorViewMode.DEMO_NORMAL
                         }
@@ -1048,7 +1124,7 @@ fun AntigravityRemoteScreen() {
                     onSyncNow = {
                         val port = bridgePortText.toIntOrNull() ?: 8766
                         coroutineScope.launch {
-                            syncLiveSessionsFromBridge(bridgeHost, port)
+                            syncLiveSessionsFromBridge(bridgeHost, port, retryAttemptsOnDisconnect = 3)
                         }
                     },
                     onDismiss = { showSessionProjectPopup = false }
@@ -1066,6 +1142,16 @@ fun AntigravityRemoteScreen() {
                 initialPort = bridgePortText,
                 initialLocalModel = customLocalModelId,
                 connectionState = connectionState,
+                autoSyncEnabled = autoSyncEnabled,
+                autoSyncRetryCount = autoSyncRetryCount,
+                onToggleAutoSync = { enabled ->
+                    autoSyncEnabled = enabled
+                    if (enabled && connectionState != BridgeConnectionState.CONNECTED_PC) {
+                        triggerAutoResyncIfDisconnected()
+                    } else if (!enabled && connectionState == BridgeConnectionState.AUTO_RESYNCING) {
+                        connectionState = BridgeConnectionState.SIMULATION_ACTIVE
+                    }
+                },
                 onSelectEngine = { engine ->
                     selectedEngineId = engine.id
                 },
@@ -1080,6 +1166,8 @@ fun AntigravityRemoteScreen() {
                         )
                         if (state != null) {
                             applyLiveSyncState(state)
+                        } else {
+                            triggerAutoResyncIfDisconnected()
                         }
                         viewMode = InspectorViewMode.DEMO_NORMAL
                         showSettingsSheet = false
@@ -1088,7 +1176,7 @@ fun AntigravityRemoteScreen() {
                 onSyncNow = {
                     val port = bridgePortText.toIntOrNull() ?: 8766
                     coroutineScope.launch {
-                        syncLiveSessionsFromBridge(bridgeHost, port)
+                        syncLiveSessionsFromBridge(bridgeHost, port, retryAttemptsOnDisconnect = 3)
                     }
                 },
                 onClearCurrentChat = {
@@ -1096,6 +1184,22 @@ fun AntigravityRemoteScreen() {
                     normalSessions[selectedNormalIndex] = current.copy(messages = emptyList())
                     viewMode = InspectorViewMode.EMPTY
                     showSettingsSheet = false
+                },
+                onOpenSystemPromptEditor = {
+                    showSettingsSheet = false
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    systemPromptStatusBanner = ""
+                    showSystemPromptEditor = true
+                    coroutineScope.launch {
+                        val livePrompts = PcBridgeClient.fetchSystemPrompts(bridgeHost, port)
+                        if (livePrompts != null) {
+                            connectionState = BridgeConnectionState.CONNECTED_PC
+                            systemPromptBundle = livePrompts.copy(
+                                updatedAt = "${livePrompts.updatedAt}#${System.currentTimeMillis()}"
+                            )
+                            systemPromptStatusBanner = "PC 실시간 프롬프트 동기화됨"
+                        }
+                    }
                 },
                 onSelectViewMode = { mode ->
                     viewMode = mode
@@ -1105,7 +1209,7 @@ fun AntigravityRemoteScreen() {
                 onSaveSettings = { newHost, newPort, newLocalModel ->
                     bridgeHost = newHost.ifBlank { "127.0.0.1" }
                     bridgePortText = newPort.ifBlank { "8766" }
-                    customLocalModelId = newLocalModel.ifBlank { "qwen2.5-coder:7b" }
+                    customLocalModelId = newLocalModel.trim()
                     coroutineScope.launch {
                         connectionState = BridgeConnectionState.CONNECTING
                         syncLiveSessionsFromBridge(
@@ -1115,6 +1219,80 @@ fun AntigravityRemoteScreen() {
                         showSettingsSheet = false
                     }
                 }
+            )
+        }
+
+        if (showSystemPromptEditor) {
+            SystemPromptEditorDialog(
+                bundle = systemPromptBundle,
+                statusBanner = systemPromptStatusBanner,
+                connectionState = connectionState,
+                onReloadFromPc = {
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    coroutineScope.launch {
+                        val fetched = PcBridgeClient.fetchSystemPrompts(bridgeHost, port)
+                        if (fetched != null) {
+                            connectionState = BridgeConnectionState.CONNECTED_PC
+                            systemPromptBundle = fetched.copy(
+                                updatedAt = "${fetched.updatedAt}#${System.currentTimeMillis()}"
+                            )
+                            systemPromptStatusBanner = "PC 원본 프롬프트를 다시 불러왔습니다"
+                        } else {
+                            systemPromptStatusBanner = "로컬 기본 프롬프트가 유지됩니다"
+                        }
+                    }
+                },
+                onSaveTargetPrompt = { targetKey, targetLabel, updatedContent ->
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    val lineCount = updatedContent.lines().size
+                    val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
+                    systemPromptBundle = when (targetKey) {
+                        "design-motion" -> systemPromptBundle.copy(designMotionMd = updatedContent, updatedAt = timeFmt)
+                        "claude" -> systemPromptBundle.copy(claudeMd = updatedContent, updatedAt = timeFmt)
+                        else -> systemPromptBundle.copy(geminiMd = updatedContent, updatedAt = timeFmt)
+                    }
+                    systemPromptStatusBanner = "$targetLabel 저장 중..."
+                    coroutineScope.launch {
+                        val saved = PcBridgeClient.saveSystemPrompt(
+                            host = bridgeHost,
+                            port = port,
+                            target = targetKey,
+                            content = updatedContent,
+                            sessionId = currentSession.id
+                        )
+                        if (saved != null) {
+                            connectionState = BridgeConnectionState.CONNECTED_PC
+                            systemPromptBundle = saved.copy(
+                                updatedAt = "${saved.updatedAt}#${System.currentTimeMillis()}"
+                            )
+                            if (saved.syncState != null) {
+                                applyLiveSyncState(saved.syncState)
+                            }
+                            systemPromptStatusBanner = "PC에 $targetLabel 저장 완료 (${lineCount}줄)"
+                        } else {
+                            val targetList = if (viewMode == InspectorViewMode.WORST_CASE) worstCaseSessions else normalSessions
+                            val idx = if (viewMode == InspectorViewMode.WORST_CASE) selectedWorstIndex else selectedNormalIndex
+                            val cur = targetList[idx]
+                            val userMsg = ChatMessage(
+                                id = "sp-user-${System.currentTimeMillis()}",
+                                role = MessageRole.USER,
+                                authorName = "나",
+                                timestamp = timeFmt,
+                                bodyText = "[시스템 프롬프트 편집] $targetLabel 저장"
+                            )
+                            val agentMsg = ChatMessage(
+                                id = "sp-agent-${System.currentTimeMillis() + 1}",
+                                role = MessageRole.AGENT,
+                                authorName = "안그래비티 도우미",
+                                timestamp = timeFmt,
+                                bodyText = "$targetLabel 내용을 업데이트하고 저장했습니다.\n• 줄 수: ${lineCount}줄 (${updatedContent.length}자)"
+                            )
+                            targetList[idx] = cur.copy(messages = cur.messages + userMsg + agentMsg)
+                            systemPromptStatusBanner = "$targetLabel 저장 완료 (${lineCount}줄)"
+                        }
+                    }
+                },
+                onDismiss = { showSystemPromptEditor = false }
             )
         }
     }
@@ -1686,6 +1864,7 @@ private fun SimplePromptInputDock(
     onPickFile: () -> Unit,
     onPickVideo: () -> Unit,
     onPushWorkToGitHub: () -> Unit,
+    onOpenSystemPromptEditor: () -> Unit,
     onToggleModelPopup: () -> Unit,
     onSelectEngine: (AiEngineOption) -> Unit,
     onSelectReasoning: (ReasoningEffort) -> Unit
@@ -1757,6 +1936,12 @@ private fun SimplePromptInputDock(
                             accentColor = AntigravityPalette.CalmSageAccent,
                             onClick = onPushWorkToGitHub
                         )
+                        PlusActionRow(
+                            title = "시스템 프롬프트 편집기",
+                            subtitle = "GEMINI.md · 디자인 스택 · 전역 규칙 실시간 편집",
+                            accentColor = AntigravityPalette.WarmLampGold,
+                            onClick = onOpenSystemPromptEditor
+                        )
                     }
                 }
             }
@@ -1784,7 +1969,7 @@ private fun SimplePromptInputDock(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "추론 강도 (Reasoning)",
+                            text = "추론 강도",
                             style = AntigravityTypography.SecondaryBody.copy(
                                 color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f),
                                 fontSize = 11.sp
@@ -1821,7 +2006,7 @@ private fun SimplePromptInputDock(
 
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "AI 모델 선택 (Model)",
+                            text = "AI 모델 선택",
                             style = AntigravityTypography.SecondaryBody.copy(
                                 color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f),
                                 fontSize = 11.sp
@@ -2712,10 +2897,14 @@ private fun UnifiedSettingsDialog(
     initialPort: String,
     initialLocalModel: String,
     connectionState: BridgeConnectionState,
+    autoSyncEnabled: Boolean,
+    autoSyncRetryCount: Int,
+    onToggleAutoSync: (Boolean) -> Unit,
     onSelectEngine: (AiEngineOption) -> Unit,
     onExecuteRemoteCommand: (String) -> Unit,
     onSyncNow: () -> Unit,
     onClearCurrentChat: () -> Unit,
+    onOpenSystemPromptEditor: () -> Unit,
     onSelectViewMode: (InspectorViewMode) -> Unit,
     onDismiss: () -> Unit,
     onSaveSettings: (String, String, String) -> Unit
@@ -2744,7 +2933,7 @@ private fun UnifiedSettingsDialog(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "안그래비티 설정",
+                    text = "설정",
                     style = AntigravityTypography.CardTitle.copy(fontSize = 15.sp)
                 )
             }
@@ -2757,60 +2946,99 @@ private fun UnifiedSettingsDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Live PC Connection Status Badge
+                // Live PC Connection Status & Auto-Resync Control Card
                 val isConnectedPc = connectionState == BridgeConnectionState.CONNECTED_PC
-                Row(
+                val isAutoResyncing = connectionState == BridgeConnectionState.AUTO_RESYNCING
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
                         .background(if (isConnectedPc) unifiedSelectedCardBg else unifiedCardBg)
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Row(
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        when {
+                                            isConnectedPc -> AntigravityPalette.CalmSageAccent
+                                            isAutoResyncing -> AntigravityPalette.WarmLampGold
+                                            else -> AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f)
+                                        }
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = when {
+                                    isConnectedPc -> "PC 실시간 연결됨 ($initialHost:$initialPort)"
+                                    isAutoResyncing -> "PC 끊김 · 자동 동기화 시도 중 (${autoSyncRetryCount.coerceAtLeast(1)}회)"
+                                    else -> "PC 연결 대기 ($initialHost:$initialPort)"
+                                },
+                                style = AntigravityTypography.PillLabel.copy(
+                                    color = when {
+                                        isConnectedPc -> AntigravityPalette.CalmSageAccent
+                                        isAutoResyncing -> AntigravityPalette.WarmLampGold
+                                        else -> AntigravityPalette.WarmIvoryInk.copy(alpha = 0.70f)
+                                    },
+                                    fontSize = 11.sp
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
                         Box(
                             modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (isConnectedPc) AntigravityPalette.CalmSageAccent
-                                    else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f)
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (isConnectedPc) {
-                                "PC 실시간 연결됨 ($initialHost:$initialPort)"
-                            } else {
-                                "PC 연결 대기 ($initialHost:$initialPort)"
-                            },
-                            style = AntigravityTypography.PillLabel.copy(
-                                color = if (isConnectedPc) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.70f),
-                                fontSize = 11.sp
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF0C0C10).copy(alpha = 0.55f))
+                                .clickable(role = Role.Button, onClick = onSyncNow)
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = "동기화",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.CalmSageAccent,
+                                    fontSize = 10.5.sp
+                                ),
+                                maxLines = 1
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Box(
+
+                    Row(
                         modifier = Modifier
+                            .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF0C0C10).copy(alpha = 0.55f))
-                            .clickable(role = Role.Button, onClick = onSyncNow)
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .clickable(role = Role.Switch) { onToggleAutoSync(!autoSyncEnabled) }
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "동기화",
+                            text = "PC 동기화 끊김 시 자동 재동기화",
                             style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.CalmSageAccent,
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.68f),
                                 fontSize = 10.5.sp
-                            ),
-                            maxLines = 1
+                            )
+                        )
+                        Text(
+                            text = if (autoSyncEnabled) "자동 켜짐" else "꺼짐",
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = if (autoSyncEnabled) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
                         )
                     }
                 }
@@ -2920,6 +3148,26 @@ private fun UnifiedSettingsDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .defaultMinSize(minHeight = 42.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(unifiedSelectedCardBg)
+                        .clickable(role = Role.Button, onClick = onOpenSystemPromptEditor)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "시스템 프롬프트 편집기 열기 (GEMINI.md · 하네스)",
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = AntigravityPalette.CalmSageAccent,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
                         .defaultMinSize(minHeight = 40.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(unifiedCardBg)
@@ -2969,7 +3217,7 @@ private fun UnifiedSettingsDialog(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Text(
-                            text = "PC 연결 주소 (기본 127.0.0.1)",
+                            text = "PC 연결 주소 (휴대폰에서는 PC의 LAN IP)",
                             style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
                         )
                         Box(
@@ -2991,7 +3239,7 @@ private fun UnifiedSettingsDialog(
                         }
 
                         Text(
-                            text = "포트 번호 (기본 8765)",
+                            text = "포트 번호 (기본 8766)",
                             style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
                         )
                         Box(
@@ -3013,7 +3261,7 @@ private fun UnifiedSettingsDialog(
                         }
 
                         Text(
-                            text = "로컬 AI 모델명 직접 지정",
+                            text = "로컬 AI 모델명 직접 지정 (비우면 선택한 모델 사용)",
                             style = AntigravityTypography.SecondaryBody.copy(fontSize = 12.sp)
                         )
                         Box(
@@ -3696,6 +3944,305 @@ private fun AiClarificationBottomCard(
             }
         }
     }
+}
+
+@Composable
+private fun SystemPromptEditorDialog(
+    bundle: SystemPromptBundle,
+    statusBanner: String,
+    connectionState: BridgeConnectionState,
+    onReloadFromPc: () -> Unit,
+    onSaveTargetPrompt: (targetKey: String, targetLabel: String, content: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val tabs = remember {
+        listOf(
+            Triple("gemini", "GEMINI.md", "전역 응답·하네스 원칙"),
+            Triple("design-motion", "design-motion.md", "D0~D5 디자인·모션 스택"),
+            Triple("claude", "CLAUDE.md", "Claude 전역 지침")
+        )
+    }
+    var selectedTabIdx by rememberSaveable { mutableIntStateOf(0) }
+    var geminiDraft by remember(bundle.geminiMd, bundle.updatedAt) { mutableStateOf(bundle.geminiMd) }
+    var designMotionDraft by remember(bundle.designMotionMd, bundle.updatedAt) { mutableStateOf(bundle.designMotionMd) }
+    var claudeDraft by remember(bundle.claudeMd, bundle.updatedAt) { mutableStateOf(bundle.claudeMd) }
+
+    val (activeKey, activeFileName, activeSubtitle) = tabs[selectedTabIdx]
+    val activeText = when (activeKey) {
+        "design-motion" -> designMotionDraft
+        "claude" -> claudeDraft
+        else -> geminiDraft
+    }
+    val onActiveTextChange: (String) -> Unit = { updated ->
+        when (activeKey) {
+            "design-motion" -> designMotionDraft = updated
+            "claude" -> claudeDraft = updated
+            else -> geminiDraft = updated
+        }
+    }
+
+    val lineCount = remember(activeText) { if (activeText.isEmpty()) 0 else activeText.lines().size }
+    val charCount = activeText.length
+    val isCompactOptimal = lineCount <= 100
+
+    val quickSnippets = remember {
+        listOf(
+            "+ 1문장 착수·즉시 완료" to "\n- 작업 시작 시 1문장으로 핵심 의도만 짚고 같은 턴에서 즉시 도구를 실행해 완료합니다.",
+            "+ 단문·능동태 브리핑" to "\n- 현재 시제·능동태·단문(`~합니다`/`~했습니다`)으로 결론과 변경 파일만 간결하게 제시합니다.",
+            "+ 네이티브 실측 검증" to "\n- 웹 린트를 네이티브 검증으로 대체하지 않으며 실제 빌드·런타임 테스트 결과를 분리 보고합니다.",
+            "+ 무단 설치·전송 금지" to "\n- 외부 바이너리 다운로드, 로그인, 텔레메트리 전송은 자동 실행하지 않고 사전 승인을 받습니다."
+        )
+    }
+
+    val dialogBg = Color(0xFF000000)
+    val cardBg = Color(0xFF0E0E13)
+    val selectedCardBg = Color(0xFF172D29)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = dialogBg,
+        titleContentColor = AntigravityPalette.WarmIvoryInk,
+        textContentColor = AntigravityPalette.MistSlateInk,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "시스템 프롬프트 편집기",
+                        style = AntigravityTypography.CardTitle.copy(fontSize = 15.5.sp)
+                    )
+                    Text(
+                        text = activeSubtitle,
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
+                            fontSize = 11.sp
+                        )
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(cardBg)
+                        .clickable(role = Role.Button, onClick = onReloadFromPc)
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "PC 불러오기",
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = AntigravityPalette.CalmSageAccent,
+                            fontSize = 10.5.sp
+                        )
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 490.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 1. Target File Tabs (GEMINI.md / design-motion.md / CLAUDE.md)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    tabs.forEachIndexed { idx, (_, tabTitle, _) ->
+                        val isSel = idx == selectedTabIdx
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 36.dp)
+                                .clip(RoundedCornerShape(11.dp))
+                                .background(if (isSel) selectedCardBg else cardBg)
+                                .clickable(role = Role.Tab) {
+                                    selectedTabIdx = idx
+                                }
+                                .padding(horizontal = 6.dp, vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = tabTitle,
+                                style = AntigravityTypography.PillLabel.copy(
+                                    color = if (isSel) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.72f),
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSel) FontWeight.SemiBold else FontWeight.Normal
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                // 2. Live Line/Char Counter & Benchmark Density Indicator
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(cardBg)
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "$activeFileName · ${lineCount}줄 · ${charCount}자",
+                        style = AntigravityTypography.TabularMetric.copy(
+                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
+                            fontSize = 11.sp
+                        )
+                    )
+                    Text(
+                        text = if (isCompactOptimal) "100줄 이하 · 최적 밀도" else "100줄 초과 · 목차화 권장",
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = if (isCompactOptimal) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmLampGold,
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                }
+
+                // 3. One-Tap Rule Preset Chips
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickSnippets.forEach { (chipLabel, snippetText) ->
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(cardBg)
+                                .clickable(role = Role.Button) {
+                                    onActiveTextChange(PcBridgeClient.applyPresetSnippet(activeText, snippetText))
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = chipLabel,
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.WarmLampGold,
+                                    fontSize = 10.5.sp
+                                ),
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                // 4. Multi-line Markdown / System Prompt Editor Box
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                        .heightIn(min = 240.dp, max = 320.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(cardBg)
+                        .border(
+                            width = 1.dp,
+                            color = AntigravityPalette.CalmSageAccent.copy(alpha = 0.22f),
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                        .padding(12.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    if (activeText.isEmpty()) {
+                        Text(
+                            text = "시스템 프롬프트 지침을 입력하세요...",
+                            style = AntigravityTypography.CodeMono.copy(
+                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.35f),
+                                fontSize = 12.sp
+                            )
+                        )
+                    }
+                    BasicTextField(
+                        value = activeText,
+                        onValueChange = onActiveTextChange,
+                        textStyle = AntigravityTypography.CodeMono.copy(
+                            color = AntigravityPalette.WarmIvoryInk,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        ),
+                        cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 210.dp)
+                    )
+                }
+
+                if (statusBanner.isNotBlank()) {
+                    Text(
+                        text = statusBanner,
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = AntigravityPalette.CalmSageAccent,
+                            fontSize = 11.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                } else {
+                    Text(
+                        text = if (connectionState == BridgeConnectionState.CONNECTED_PC) {
+                            "저장 시 PC의 ~/.gemini/$activeFileName 파일에 즉시 반영됩니다."
+                        } else {
+                            "현재 모바일 단독 모드 · PC 연결 시 실시간 동기화됩니다."
+                        },
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f),
+                            fontSize = 10.5.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Box(
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 44.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(AntigravityPalette.CalmSageAccent)
+                    .clickable(role = Role.Button) {
+                        onSaveTargetPrompt(activeKey, activeFileName, activeText)
+                    }
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "PC에 즉시 저장",
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.DeepForestInk,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.5.sp
+                    )
+                )
+            }
+        },
+        dismissButton = {
+            Box(
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 44.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .clickable(role = Role.Button, onClick = onDismiss)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "닫기",
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.MistSlateInk,
+                        fontSize = 12.5.sp
+                    )
+                )
+            }
+        }
+    )
 }
 
 private fun copyToClipboard(context: Context, text: String) {

@@ -25,10 +25,87 @@ const PORT = portArgIndex !== -1 && process.argv[portArgIndex + 1]
   : Number(process.env.ANTIGRAVITY_BRIDGE_PORT || 8766);
 
 const ANTIGRAVITY_ROOT = path.join(os.homedir(), '.gemini', 'antigravity');
+const GEMINI_HOME_DIR = path.join(os.homedir(), '.gemini');
+const CLAUDE_HOME_DIR = path.join(os.homedir(), '.claude');
+const GEMINI_MD_PATH = path.join(GEMINI_HOME_DIR, 'GEMINI.md');
+const DESIGN_MOTION_MD_PATH = path.join(GEMINI_HOME_DIR, 'design-motion.md');
+const DESIGN_MOTION_SKILL_PATH = path.join(GEMINI_HOME_DIR, 'config', 'skills', 'design-motion-stack', 'SKILL.md');
+const CLAUDE_MD_PATH = path.join(CLAUDE_HOME_DIR, 'CLAUDE.md');
 const BRAIN_DIR = path.join(ANTIGRAVITY_ROOT, 'brain');
 const ANNOTATIONS_DIR = path.join(ANTIGRAVITY_ROOT, 'annotations');
 const SCRATCH_DIR = path.join(ANTIGRAVITY_ROOT, 'scratch');
 const PRIMARY_CONVERSATION_ID = 'ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8';
+
+function readSystemPromptBundle() {
+  const safeRead = (p, fallback = '') => {
+    try {
+      return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  let updatedAt = new Date().toISOString();
+  try {
+    if (fs.existsSync(GEMINI_MD_PATH)) {
+      updatedAt = fs.statSync(GEMINI_MD_PATH).mtime.toISOString();
+    }
+  } catch {
+    // Ignore
+  }
+  return {
+    ok: true,
+    geminiMd: safeRead(GEMINI_MD_PATH),
+    designMotionMd: safeRead(DESIGN_MOTION_MD_PATH),
+    claudeMd: safeRead(CLAUDE_MD_PATH),
+    updatedAt
+  };
+}
+
+function saveSystemPromptTarget(target, content) {
+  const normalizedTarget = String(target || 'gemini').trim().toLowerCase();
+  const cleanContent = String(content || '');
+  let targetPath = GEMINI_MD_PATH;
+  let targetLabel = 'GEMINI.md (전역 시스템 프롬프트)';
+
+  if (normalizedTarget === 'design-motion' || normalizedTarget === 'design_motion') {
+    targetPath = DESIGN_MOTION_MD_PATH;
+    targetLabel = 'design-motion.md (디자인·모션 파이프라인)';
+  } else if (normalizedTarget === 'claude') {
+    targetPath = CLAUDE_MD_PATH;
+    targetLabel = 'CLAUDE.md (Claude 전역 지침)';
+  }
+
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  if (fs.existsSync(targetPath)) {
+    try {
+      fs.copyFileSync(targetPath, `${targetPath}.bak`);
+    } catch {
+      // Ignore backup error
+    }
+  }
+  fs.writeFileSync(targetPath, cleanContent, 'utf8');
+
+  if (targetPath === DESIGN_MOTION_MD_PATH && fs.existsSync(DESIGN_MOTION_SKILL_PATH)) {
+    try {
+      const existingSkill = fs.readFileSync(DESIGN_MOTION_SKILL_PATH, 'utf8');
+      const fmMatch = existingSkill.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n*/);
+      const frontmatter = fmMatch ? fmMatch[0] : '---\nname: design-motion-stack\ndescription: Design and motion pipeline\n---\n\n';
+      fs.writeFileSync(DESIGN_MOTION_SKILL_PATH, frontmatter + cleanContent, 'utf8');
+    } catch {
+      // Ignore skill sync error
+    }
+  }
+
+  const lineCount = cleanContent.split(/\r?\n/).length;
+  return {
+    target: normalizedTarget,
+    targetLabel,
+    targetPath: targetPath.replace(/\\/g, '/'),
+    lineCount,
+    charCount: cleanContent.length,
+    bundle: readSystemPromptBundle()
+  };
+}
 
 function readAnnotationSessionInfo(convId) {
   try {
@@ -66,6 +143,10 @@ function readAnnotationSessionInfo(convId) {
 
 let currentActiveSessionId = PRIMARY_CONVERSATION_ID;
 let currentActiveProjectName = 'antigravity-remote-apk';
+
+const DEFAULT_OLLAMA_MODEL = process.env.ANTIGRAVITY_OLLAMA_MODEL || 'gemma4-26b-a4b-local';
+const LOCAL_AI_TIMEOUT_MS = Number(process.env.ANTIGRAVITY_LOCAL_AI_TIMEOUT_MS || 30000);
+let localAiInFlight = false;
 
 // Ensure scratch directory exists
 try {
@@ -620,53 +701,70 @@ function executePcRemoteCommand(command, args = {}) {
   };
 }
 
-async function tryLocalOllamaOrLmStudio(modelId, prompt) {
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2200);
-    const res = await fetch('http://127.0.0.1:11434/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: modelId, prompt, stream: false }),
-      signal: controller.signal
-    });
-    clearTimeout(timer);
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.response) {
-        return `[PC 로컬 Ollama (${modelId}) 응답]\n${data.response}`;
-      }
-    }
-  } catch {
-    // Not active
+async function tryLocalOllama(modelId, prompt) {
+  if (localAiInFlight) {
+    return {
+      ok: false,
+      errorCode: 'LOCAL_AI_BUSY',
+      error: '로컬 AI가 이미 다른 요청을 처리 중입니다. 현재 응답이 끝난 뒤 다시 시도해 주세요.'
+    };
   }
 
+  localAiInFlight = true;
+  const requestedModel = String(modelId || '').trim() || DEFAULT_OLLAMA_MODEL;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOCAL_AI_TIMEOUT_MS);
+
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2200);
-    const res = await fetch('http://127.0.0.1:1234/v1/chat/completions', {
+    // Ollama의 generate 대신 chat API를 사용합니다. Gemma 4가 사고 토큰을
+    // 별도 필드로 처리하도록 하며, 화면에는 최종 답변만 전달합니다.
+    const res = await fetch('http://127.0.0.1:11434/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: modelId,
+        model: requestedModel,
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 256
+        think: false,
+        stream: false,
+        keep_alive: '5m',
+        options: {
+          temperature: 0.2,
+          num_predict: 512
+        }
       }),
       signal: controller.signal
     });
-    clearTimeout(timer);
-    if (res.ok) {
-      const data = await res.json();
-      const content = data?.choices?.[0]?.message?.content;
-      if (content) {
-        return `[PC 로컬 LM Studio (${modelId}) 응답]\n${content}`;
-      }
-    }
-  } catch {
-    // Not active
-  }
 
-  return null;
+    const data = await res.json().catch(() => ({}));
+    const content = String(data?.message?.content || '').trim();
+    if (res.ok && content) {
+      return {
+        ok: true,
+        source: 'ollama',
+        model: String(data.model || requestedModel),
+        reply: `[PC 로컬 Ollama (${String(data.model || requestedModel)}) 응답]\n${content}`
+      };
+    }
+
+    const detail = String(data?.error || `Ollama HTTP ${res.status}`).trim();
+    return {
+      ok: false,
+      errorCode: res.status === 404 ? 'OLLAMA_MODEL_NOT_FOUND' : 'OLLAMA_REQUEST_FAILED',
+      error: `Ollama 로컬 모델(${requestedModel}) 응답 실패: ${detail}`
+    };
+  } catch (error) {
+    const message = error?.name === 'AbortError'
+      ? `Ollama 응답이 ${LOCAL_AI_TIMEOUT_MS}ms 안에 완료되지 않았습니다.`
+      : `Ollama 연결 실패: ${String(error?.message || error)}`;
+    return {
+      ok: false,
+      errorCode: error?.name === 'AbortError' ? 'OLLAMA_TIMEOUT' : 'OLLAMA_UNAVAILABLE',
+      error: message
+    };
+  } finally {
+    clearTimeout(timer);
+    localAiInFlight = false;
+  }
 }
 
 function recordOverlayExchange(sessionId, prompt, reply, toolTitle = '안그래비티 라이브 세션 동기화', toolPath = '') {
@@ -770,6 +868,191 @@ const server = http.createServer((req, res) => {
       projects,
       sessions
     }));
+    return;
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/api/system-prompt')) {
+    const bundle = readSystemPromptBundle();
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify(bundle));
+    return;
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/editor')) {
+    const u = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    const view = u.searchParams.get('view') || 'editor-gemini';
+    const bundle = readSystemPromptBundle();
+    const esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const isDesign = view === 'editor-design';
+    const isPlus = view === 'plus-menu';
+    const activeTab = isDesign ? 'design-motion' : 'gemini';
+    const activeFile = isDesign ? 'design-motion.md' : 'GEMINI.md';
+    const activeSub = isDesign ? 'D0~D5 디자인·모션 스택' : '전역 응답·하네스 원칙';
+    const activeText = isDesign ? bundle.designMotionMd : bundle.geminiMd;
+    const lineCount = activeText ? activeText.split(/\r?\n/).length : 0;
+    const charCount = activeText ? activeText.length : 0;
+    const html = `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Antigravity Remote — 시스템 프롬프트 편집기</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Pretendard', 'Malgun Gothic', -apple-system, sans-serif; }
+  body { background: #000000; color: #F2EFE9; width: 412px; height: 915px; overflow: hidden; position: relative; display: flex; flex-direction: column; justify-content: space-between; }
+  .header { display: flex; align-items: center; justify-content: space-between; padding: 18px 16px 10px; }
+  .header-left { display: flex; align-items: center; gap: 10px; }
+  .circle-btn { width: 44px; height: 44px; border-radius: 50%; background: #0D0D12; display: flex; align-items: center; justify-content: center; color: #F2EFE9; font-size: 18px; }
+  .session-title { font-size: 13px; font-weight: 600; color: rgba(242,239,233,0.88); }
+  .chat-area { flex: 1; padding: 12px 16px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+  .bubble-user { align-self: flex-end; max-width: 295px; background: #000000; border: 1px solid #171720; border-radius: 20px 20px 6px 20px; padding: 11px 15px; font-size: 13.5px; line-height: 1.5; color: #F2EFE9; }
+  .bubble-agent { align-self: flex-start; max-width: 340px; background: #000000; border-radius: 20px 20px 20px 6px; padding: 11px 15px; font-size: 13.5px; line-height: 1.55; color: #F2EFE9; }
+  .dock { padding: 8px 8px 16px; background: #000000; }
+  .plus-popup { width: 285px; background: rgba(12,12,16,0.98); border-radius: 22px; padding: 12px; margin: 0 0 8px 4px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 12px 32px rgba(0,0,0,0.85); border: 1px solid rgba(255,255,255,0.05); }
+  .plus-row { background: rgba(21,21,28,0.65); border-radius: 14px; padding: 10px 12px; display: flex; justify-content: space-between; align-items: center; }
+  .plus-row.highlight { background: rgba(43,36,24,0.55); border: 1px solid rgba(217,182,118,0.35); }
+  .plus-title { font-size: 12.5px; font-weight: 600; color: #F2EFE9; }
+  .plus-title.sage { color: #7DB6A8; }
+  .plus-title.gold { color: #D9B676; }
+  .plus-sub { font-size: 10.5px; color: rgba(242,239,233,0.48); margin-top: 2px; }
+  .chips { display: flex; gap: 8px; padding: 4px 4px 8px; overflow: hidden; white-space: nowrap; }
+  .chip { background: rgba(20,20,26,0.6); border-radius: 20px; padding: 7px 12px; font-size: 11.5px; color: rgba(242,239,233,0.75); }
+  .input-bar { display: flex; align-items: center; background: rgba(18,18,24,0.65); border-radius: 22px; padding: 8px 8px 8px 12px; gap: 8px; }
+  .plus-icon { color: #7DB6A8; font-weight: 700; font-size: 16px; }
+  .placeholder { flex: 1; font-size: 12.5px; color: rgba(242,239,233,0.38); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .model-tag { font-size: 9px; color: rgba(242,239,233,0.45); }
+  .send-btn { width: 22px; height: 22px; border-radius: 50%; background: rgba(125,182,168,0.5); display: flex; align-items: center; justify-content: center; font-size: 11px; color: #0B1916; font-weight: 700; }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,0.76); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .dialog { width: 100%; background: #000000; border: 1px solid rgba(125,182,168,0.22); border-radius: 24px; padding: 18px 16px; display: flex; flex-direction: column; gap: 10px; box-shadow: 0 20px 50px rgba(0,0,0,0.95); }
+  .dlg-header { display: flex; justify-content: space-between; align-items: center; }
+  .dlg-title { font-size: 16px; font-weight: 700; color: #F2EFE9; }
+  .dlg-sub { font-size: 11px; color: rgba(242,239,233,0.55); margin-top: 2px; }
+  .reload-btn { background: #0E0E13; color: #7DB6A8; font-size: 11px; font-weight: 600; padding: 6px 10px; border-radius: 10px; }
+  .tabs { display: flex; gap: 6px; }
+  .tab { flex: 1; text-align: center; padding: 8px 4px; border-radius: 11px; background: #0E0E13; font-size: 11px; color: rgba(242,239,233,0.72); }
+  .tab.active { background: #172D29; color: #7DB6A8; font-weight: 600; }
+  .metric-bar { display: flex; justify-content: space-between; align-items: center; background: #0E0E13; border-radius: 10px; padding: 7px 10px; font-size: 11px; }
+  .metric-left { font-family: 'Cascadia Mono', Consolas, monospace; color: rgba(242,239,233,0.85); }
+  .metric-right { color: #7DB6A8; font-weight: 600; font-size: 10.5px; }
+  .preset-row { display: flex; gap: 6px; overflow: hidden; white-space: nowrap; }
+  .preset { background: #0E0E13; color: #D9B676; font-size: 10.5px; padding: 6px 10px; border-radius: 10px; }
+  .editor-box { background: #0E0E13; border: 1px solid rgba(125,182,168,0.25); border-radius: 14px; padding: 12px; height: 320px; overflow-y: auto; font-family: 'Cascadia Mono', Consolas, monospace; font-size: 11.5px; line-height: 1.52; color: #F2EFE9; white-space: pre-wrap; word-break: break-word; }
+  .status-line { font-size: 11px; color: #7DB6A8; font-weight: 500; }
+  .dlg-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+  .btn-cancel { padding: 10px 14px; border-radius: 13px; font-size: 12.5px; color: #A7B4BE; }
+  .btn-save { padding: 10px 16px; border-radius: 13px; background: #7DB6A8; color: #0B1916; font-size: 12.5px; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <div class="circle-btn">☰</div>
+      <div class="session-title">현재 안그래비티 세션 (실시간 연동) ⌄</div>
+    </div>
+    <div class="circle-btn">⚙</div>
+  </div>
+  <div class="chat-area">
+    <div class="bubble-user">우리가 개발한 앱에 시스템프롬프트 편집기 만들어</div>
+    <div class="bubble-agent">Antigravity Remote 앱과 PC 브리지 서버에 실시간 시스템 프롬프트(GEMINI.md, design-motion.md, CLAUDE.md) 3탭 조회·프리셋 삽입·PC 즉시 저장 편집기를 구현했습니다.</div>
+    <div class="bubble-user">[시스템 프롬프트 편집] ${esc(activeFile)} 저장</div>
+    <div class="bubble-agent">PC 시스템 프롬프트(${esc(activeFile)})를 업데이트하고 저장했습니다.<br/>• 줄 수: ${lineCount}줄 (${charCount}자)<br/>• 자동 백업 생성 및 실시간 반영 완료</div>
+  </div>
+  <div class="dock">
+    ${isPlus ? `
+    <div class="plus-popup">
+      <div class="plus-row"><div><div class="plus-title">사진</div><div class="plus-sub">사진 첨부 및 PC 세션 전송</div></div><span>›</span></div>
+      <div class="plus-row"><div><div class="plus-title">파일</div><div class="plus-sub">문서 · 코드 파일 첨부</div></div><span>›</span></div>
+      <div class="plus-row"><div><div class="plus-title">동영상</div><div class="plus-sub">동영상 첨부 및 PC 세션 전송</div></div><span>›</span></div>
+      <div class="plus-row"><div><div class="plus-title sage">작업내용 깃허브 올리기</div><div class="plus-sub">전체 소스코드 · 프로젝트 작업 GitHub 푸시</div></div><span>›</span></div>
+      <div class="plus-row highlight"><div><div class="plus-title gold">시스템 프롬프트 편집기</div><div class="plus-sub">GEMINI.md · 디자인 스택 · 전역 규칙 실시간 편집</div></div><span style="color:#D9B676">›</span></div>
+    </div>` : ''}
+    <div class="chips">
+      <div class="chip">오늘 해야 할 일을 깔끔하게 정리해줘</div>
+      <div class="chip">PC 상태와 프로젝트 폴더 목록 보여줘</div>
+    </div>
+    <div class="input-bar">
+      <span class="plus-icon">+</span>
+      <span class="placeholder">방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘</span>
+      <span class="model-tag">Argon·M ⌄</span>
+      <div class="send-btn">↑</div>
+    </div>
+  </div>
+  ${!isPlus ? `
+  <div class="scrim">
+    <div class="dialog">
+      <div class="dlg-header">
+        <div>
+          <div class="dlg-title">시스템 프롬프트 편집기</div>
+          <div class="dlg-sub">${esc(activeSub)}</div>
+        </div>
+        <div class="reload-btn">PC 불러오기</div>
+      </div>
+      <div class="tabs">
+        <div class="tab ${activeTab === 'gemini' ? 'active' : ''}">GEMINI.md</div>
+        <div class="tab ${activeTab === 'design-motion' ? 'active' : ''}">design-motion.md</div>
+        <div class="tab">CLAUDE.md</div>
+      </div>
+      <div class="metric-bar">
+        <span class="metric-left">${esc(activeFile)} · ${lineCount}줄 · ${charCount}자</span>
+        <span class="metric-right">100줄 이하 · 최적 밀도</span>
+      </div>
+      <div class="preset-row">
+        <div class="preset">+ 1문장 착수·즉시 완료</div>
+        <div class="preset">+ 단문·능동태 브리핑</div>
+        <div class="preset">+ 네이티브 실측 검증</div>
+      </div>
+      <div class="editor-box">${esc(activeText)}</div>
+      <div class="status-line">${isDesign ? `PC에 ${esc(activeFile)} 저장 완료 (${lineCount}줄 · WPF 태그 제거됨)` : `PC 실시간 프롬프트 동기화됨 (~/.gemini/${esc(activeFile)})`}</div>
+      <div class="dlg-actions">
+        <div class="btn-cancel">닫기</div>
+        <div class="btn-save">PC에 즉시 저장</div>
+      </div>
+    </div>
+  </div>` : ''}
+</body>
+</html>`;
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+    return;
+  }
+
+  if (req.method === 'POST' && req.url.startsWith('/api/system-prompt')) {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString('utf8'); });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const target = String(parsed.target || 'gemini');
+        const content = String(parsed.content || '');
+        const sessionId = String(parsed.sessionId || currentActiveSessionId);
+        const saved = saveSystemPromptTarget(target, content);
+        const replyMsg = [
+          `PC 시스템 프롬프트(${saved.targetLabel})를 업데이트하고 저장했습니다.`,
+          `• 줄 수: ${saved.lineCount}줄 (${saved.charCount}자)`,
+          `• 자동 백업 생성 및 실시간 반영 완료`
+        ].join('\n');
+        recordOverlayExchange(
+          sessionId,
+          `[시스템 프롬프트 편집] ${saved.targetLabel} 저장`,
+          replyMsg,
+          '시스템 프롬프트 업데이트',
+          saved.targetLabel
+        );
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ...saved.bundle,
+          savedTarget: saved.target,
+          savedLabel: saved.targetLabel,
+          lineCount: saved.lineCount,
+          charCount: saved.charCount,
+          projects: listPcProjects(),
+          sessions: getLiveAntigravitySessions()
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+    });
     return;
   }
 
@@ -987,10 +1270,19 @@ const server = http.createServer((req, res) => {
           const listRes = executePcRemoteCommand('list_projects');
           reply = `${statusRes.summary}\n\n${listRes.summary}`;
         } else if (isLocalAi) {
-          reply = await tryLocalOllamaOrLmStudio(modelId, prompt);
-          if (!reply) {
-            reply = `요청하신 "${prompt}" 작업을 로컬 파이프라인(${modelId})에서 처리했습니다.`;
+          const localResult = await tryLocalOllama(modelId, prompt);
+          if (!localResult.ok) {
+            res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({
+              ok: false,
+              isLocalAi: true,
+              modelId,
+              errorCode: localResult.errorCode,
+              error: localResult.error
+            }));
+            return;
           }
+          reply = localResult.reply;
         } else {
           reply = `요청하신 "${prompt}" 작업을 현재 세션 및 프로젝트(${currentActiveProjectName})에 반영했습니다.`;
         }
@@ -1004,6 +1296,7 @@ const server = http.createServer((req, res) => {
           engineLabel,
           modelId,
           isLocalAi,
+          source: isLocalAi ? 'ollama' : 'bridge',
           reply,
           projects: listPcProjects()
         }));
