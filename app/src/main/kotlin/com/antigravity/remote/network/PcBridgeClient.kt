@@ -28,6 +28,19 @@ data class StreamProgressFrame(
     val fromLiveBridge: Boolean = false
 )
 
+data class PcProjectFolder(
+    val name: String,
+    val path: String,
+    val fileCount: Int
+)
+
+data class LiveSyncState(
+    val activeConversationId: String,
+    val activeProjectName: String,
+    val projects: List<PcProjectFolder>,
+    val sessions: List<WorkspaceSession>
+)
+
 /**
  * Handles both real LAN communication with `pc-bridge-server.mjs` (HTTP/JSON + chunked streaming)
  * and the built-in interactive Kotlin Coroutines Token Streaming Engine when away from the PC.
@@ -161,6 +174,205 @@ object PcBridgeClient {
         }
         null
     }
+
+    private fun parseSyncStateFromJson(root: JSONObject): LiveSyncState {
+        val pArr = root.optJSONArray("projects") ?: JSONArray()
+        val projects = mutableListOf<PcProjectFolder>()
+        for (i in 0 until pArr.length()) {
+            val pObj = pArr.optJSONObject(i) ?: continue
+            projects.add(
+                PcProjectFolder(
+                    name = pObj.optString("name", "project"),
+                    path = pObj.optString("path", ""),
+                    fileCount = pObj.optInt("fileCount", 0)
+                )
+            )
+        }
+
+        val arr = root.optJSONArray("sessions") ?: JSONArray()
+        val parsedSessions = mutableListOf<WorkspaceSession>()
+        for (i in 0 until arr.length()) {
+            val sObj = arr.optJSONObject(i) ?: continue
+            val qArr = sObj.optJSONArray("quickPrompts") ?: JSONArray()
+            val quickPrompts = mutableListOf<String>()
+            for (q in 0 until qArr.length()) {
+                val item = qArr.optString(q)
+                if (item.isNotBlank()) quickPrompts.add(item)
+            }
+            if (quickPrompts.isEmpty()) {
+                quickPrompts.add("오늘 해야 할 일을 깔끔하게 정리해줘")
+            }
+
+            val mArr = sObj.optJSONArray("messages") ?: JSONArray()
+            val messages = mutableListOf<ChatMessage>()
+            for (m in 0 until mArr.length()) {
+                val mObj = mArr.optJSONObject(m) ?: continue
+                val roleStr = mObj.optString("role", "AGENT")
+                val role = if (roleStr.equals("USER", ignoreCase = true)) {
+                    MessageRole.USER
+                } else {
+                    MessageRole.AGENT
+                }
+                val tArr = mObj.optJSONArray("tools") ?: JSONArray()
+                val tools = mutableListOf<ToolExecutionItem>()
+                for (t in 0 until tArr.length()) {
+                    val tObj = tArr.optJSONObject(t) ?: continue
+                    tools.add(
+                        ToolExecutionItem(
+                            id = tObj.optString("id", "tool-$t"),
+                            title = tObj.optString("title", "작업 실행"),
+                            commandOrPath = tObj.optString("commandOrPath", ""),
+                            outputPreview = tObj.optString("outputPreview", "완료"),
+                            durationMs = tObj.optLong("durationMs", 250L),
+                            status = ToolRunStatus.COMPLETED
+                        )
+                    )
+                }
+                messages.add(
+                    ChatMessage(
+                        id = mObj.optString("id", "live-msg-$m"),
+                        role = role,
+                        authorName = mObj.optString("authorName", ""),
+                        timestamp = mObj.optString("timestamp", ""),
+                        thoughtText = mObj.optString("thoughtText", ""),
+                        thoughtDurationSec = mObj.optString("thoughtDurationSec", "1.0초"),
+                        tools = tools,
+                        bodyText = mObj.optString("bodyText", "")
+                    )
+                )
+            }
+
+            if (messages.isNotEmpty()) {
+                parsedSessions.add(
+                    WorkspaceSession(
+                        id = sObj.optString("id", "live-session-$i"),
+                        title = sObj.optString("title", "현재 안그래비티 세션"),
+                        ambientCaption = sObj.optString("ambientCaption", "실시간 연동 중"),
+                        branchName = sObj.optString("branchName", "live-sync"),
+                        activeTaskSummary = sObj.optString("activeTaskSummary", "현재 PC 세션 동기화"),
+                        durationTag = sObj.optString("durationTag", "실시간"),
+                        quickPrompts = quickPrompts,
+                        messages = messages
+                    )
+                )
+            }
+        }
+
+        return LiveSyncState(
+            activeConversationId = root.optString("activeConversationId", ""),
+            activeProjectName = root.optString("activeProjectName", "antigravity-remote-apk"),
+            projects = projects,
+            sessions = parsedSessions
+        )
+    }
+
+    suspend fun fetchLiveSyncState(host: String, port: Int): LiveSyncState? = withContext(Dispatchers.IO) {
+        for (candidate in candidateHosts(host)) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("http://$candidate:$port/api/sessions")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 1000
+                    readTimeout = 2000
+                    setRequestProperty("Accept", "application/json")
+                }
+                if (connection.responseCode in 200..299) {
+                    val responseText = BufferedReader(
+                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                    ).use { it.readText() }
+                    val state = parseSyncStateFromJson(JSONObject(responseText))
+                    if (state.sessions.isNotEmpty()) return@withContext state
+                }
+            } catch (_: Exception) {
+                // Try next
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        null
+    }
+
+    private suspend fun postJsonForSyncState(
+        host: String,
+        port: Int,
+        endpoint: String,
+        payloadObj: JSONObject
+    ): LiveSyncState? = withContext(Dispatchers.IO) {
+        for (candidate in candidateHosts(host)) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL("http://$candidate:$port$endpoint")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "POST"
+                    connectTimeout = 1200
+                    readTimeout = 3500
+                    doOutput = true
+                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                }
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { writer ->
+                    writer.write(payloadObj.toString())
+                    writer.flush()
+                }
+                if (connection.responseCode in 200..299) {
+                    val responseText = BufferedReader(
+                        InputStreamReader(connection.inputStream, Charsets.UTF_8)
+                    ).use { it.readText() }
+                    return@withContext parseSyncStateFromJson(JSONObject(responseText))
+                }
+            } catch (_: Exception) {
+                // Try next
+            } finally {
+                connection?.disconnect()
+            }
+        }
+        null
+    }
+
+    suspend fun createRemoteSession(
+        host: String,
+        port: Int,
+        title: String,
+        projectFolder: String
+    ): LiveSyncState? = postJsonForSyncState(
+        host = host,
+        port = port,
+        endpoint = "/api/sessions/create",
+        payloadObj = JSONObject().apply {
+            put("title", title)
+            put("projectFolder", projectFolder)
+        }
+    )
+
+    suspend fun createRemoteProjectFolder(
+        host: String,
+        port: Int,
+        folderName: String,
+        sessionId: String
+    ): LiveSyncState? = postJsonForSyncState(
+        host = host,
+        port = port,
+        endpoint = "/api/projects/create",
+        payloadObj = JSONObject().apply {
+            put("folderName", folderName)
+            put("sessionId", sessionId)
+        }
+    )
+
+    suspend fun executeRemoteCommand(
+        host: String,
+        port: Int,
+        command: String,
+        sessionId: String
+    ): LiveSyncState? = postJsonForSyncState(
+        host = host,
+        port = port,
+        endpoint = "/api/remote-control",
+        payloadObj = JSONObject().apply {
+            put("command", command)
+            put("sessionId", sessionId)
+        }
+    )
 
     private suspend fun tryRequestBridgeReply(
         host: String,

@@ -15,6 +15,12 @@ enum class BridgeConnectionState(val badgeLabel: String) {
     DISCONNECTED_ERROR("연결 확인 필요")
 }
 
+enum class ReasoningEffort(val label: String, val korDesc: String) {
+    LOW("Low", "빠른 응답"),
+    MEDIUM("Medium", "균형 추론"),
+    HIGH("High", "심층 추론")
+}
+
 data class AiEngineOption(
     val id: String,
     val label: String,
@@ -30,20 +36,60 @@ object AiEngineCatalog {
     val options: List<AiEngineOption> = listOf(
         AiEngineOption(
             id = "engine-antigravity",
-            label = "Antigravity 기본 AI",
-            shortName = "기본 AI",
-            modelId = "antigravity-agent",
-            providerTag = "추천 · 자동 도우미",
-            description = "질문 답변, 문서 요약, PC 작업까지 가장 빠르고 정확하게 처리합니다.",
+            label = "Gemini 4 Argon",
+            shortName = "Gemini 4 Argon",
+            modelId = "gemini-4-argon",
+            providerTag = "New · 기본",
+            description = "안그래비티 기본 최신 멀티모달·코딩 에이전트 모델입니다.",
             isLocal = false,
-            defaultPort = 8765
+            defaultPort = 8766
+        ),
+        AiEngineOption(
+            id = "engine-gemini-flash",
+            label = "Gemini 3.8 Flash",
+            shortName = "Gemini 3.8 Flash",
+            modelId = "gemini-3.8-flash",
+            providerTag = "Fast",
+            description = "빠른 응답과 실시간 대화·요약에 최적화된 경량 모델입니다.",
+            isLocal = false,
+            defaultPort = 8766
+        ),
+        AiEngineOption(
+            id = "engine-claude-sonnet",
+            label = "Claude Sonnet 5.5",
+            shortName = "Claude Sonnet 5.5",
+            modelId = "claude-sonnet-5.5",
+            providerTag = "New",
+            description = "정교한 코드 작성과 UI/UX 설계에 강한 밸런스 모델입니다.",
+            isLocal = false,
+            defaultPort = 8766
+        ),
+        AiEngineOption(
+            id = "engine-claude-opus",
+            label = "Claude Opus 5.5",
+            shortName = "Claude Opus 5.5",
+            modelId = "claude-opus-5.5",
+            providerTag = "New · 심층",
+            description = "복합 아키텍처 설계와 깊은 추론을 수행하는 플래그십 모델입니다.",
+            isLocal = false,
+            defaultPort = 8766
+        ),
+        AiEngineOption(
+            id = "engine-gpt-oss",
+            label = "GPT-OSS 120B",
+            shortName = "GPT-OSS 120B",
+            modelId = "gpt-oss-120b",
+            providerTag = "Open Weight",
+            description = "대규모 오픈 웨이트 기반 범용 추론 및 작업 모델입니다.",
+            isLocal = false,
+            defaultPort = 8766
         ),
         AiEngineOption(
             id = "engine-local-qwen",
             label = "내 PC 로컬 AI (Qwen 2.5)",
-            shortName = "로컬 AI · Qwen",
+            shortName = "Qwen 2.5",
             modelId = "qwen2.5-coder:7b",
-            providerTag = "내 컴퓨터에서 직접 실행",
+            providerTag = "로컬 실행",
             description = "외부 서버 전송 없이 내 PC 안에서 안전하게 답변과 코드를 생성합니다.",
             isLocal = true,
             defaultPort = 11434
@@ -51,9 +97,9 @@ object AiEngineCatalog {
         AiEngineOption(
             id = "engine-local-deepseek",
             label = "내 PC 로컬 AI (DeepSeek R1)",
-            shortName = "로컬 AI · DeepSeek",
+            shortName = "DeepSeek R1",
             modelId = "deepseek-r1:8b",
-            providerTag = "깊이 생각하는 추론형",
+            providerTag = "로컬 추론형",
             description = "복잡한 고민이나 단계별 계획이 필요할 때 차분하게 생각한 뒤 답합니다.",
             isLocal = true,
             defaultPort = 11434
@@ -61,9 +107,9 @@ object AiEngineCatalog {
         AiEngineOption(
             id = "engine-local-llama",
             label = "내 PC 로컬 AI (Llama 3.1)",
-            shortName = "로컬 AI · Llama",
+            shortName = "Llama 3.1",
             modelId = "llama-3.1-8b-instruct",
-            providerTag = "자연스러운 한국어 대화",
+            providerTag = "로컬 대화형",
             description = "일상적인 대화와 글 다듬기에 적합한 가벼운 로컬 AI 모델입니다.",
             isLocal = true,
             defaultPort = 1234
@@ -103,6 +149,7 @@ data class ChatMessage(
     val codeBlockLanguage: String? = null,
     val codeBlockContent: String? = null,
     val isStreaming: Boolean = false,
+    val steeringStatusText: String = "",
     val tokenCount: Int = 0,
     val tokensPerSec: Double = 0.0
 )

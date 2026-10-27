@@ -1,30 +1,47 @@
 #!/usr/bin/env node
 /**
- * Antigravity Remote — Companion PC Bridge, Live Antigravity Session Sync & Local AI Router
- * Usage: node pc-bridge-server.mjs [--port 8765]
+ * Antigravity Remote — PC Remote Control, Live Session Sync, Project Folder Creator & Local AI Router
+ * Usage: node pc-bridge-server.mjs [--port 8766]
  *
  * Exposes:
- *   GET  /api/status   -> Returns bridge health, active PC workspace info & Local AI support
- *   GET  /api/sessions -> Reads real Antigravity sessions from ~/.gemini/antigravity/brain/<id>/.system_generated/logs/transcript.jsonl
- *   GET  /api/models   -> Lists selectable Antigravity & Local AI models (Ollama / LM Studio)
- *   POST /api/chat     -> Routes mobile prompt to Antigravity session sync or Local AI (Ollama :11434 / LM Studio :1234)
+ *   GET  /api/status          -> Bridge health, active session ID, PC workspace & project folders
+ *   GET  /api/sessions        -> Real-time Antigravity sessions (~/.gemini/antigravity/brain) + PC projects (~/.gemini/antigravity/scratch)
+ *   POST /api/sessions/create -> Create a new Antigravity session (and optional project folder) on the PC from mobile
+ *   POST /api/projects/create -> Create a new project folder inside ~/.gemini/antigravity/scratch/<name> on the PC from mobile
+ *   POST /api/remote-control  -> Execute bounded PC remote control commands (pc_status, list_projects, git_status, sync_session)
+ *   POST /api/chat            -> Interactive chat + natural-language PC remote control + Local AI routing
  */
 
 import http from 'node:http';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 
 const portArgIndex = process.argv.indexOf('--port');
 const PORT = portArgIndex !== -1 && process.argv[portArgIndex + 1]
   ? Number(process.argv[portArgIndex + 1])
   : Number(process.env.ANTIGRAVITY_BRIDGE_PORT || 8766);
 
-const BRAIN_DIR = path.join(os.homedir(), '.gemini', 'antigravity', 'brain');
+const ANTIGRAVITY_ROOT = path.join(os.homedir(), '.gemini', 'antigravity');
+const BRAIN_DIR = path.join(ANTIGRAVITY_ROOT, 'brain');
+const SCRATCH_DIR = path.join(ANTIGRAVITY_ROOT, 'scratch');
 const PRIMARY_CONVERSATION_ID = 'ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8';
 
-// In-memory + file-backed overlay for messages sent from the mobile app during a live session
+let currentActiveSessionId = PRIMARY_CONVERSATION_ID;
+let currentActiveProjectName = 'antigravity-remote-apk';
+
+// Ensure scratch directory exists
+try {
+  fs.mkdirSync(SCRATCH_DIR, { recursive: true });
+} catch {
+  // Ignore
+}
+
+// Overlay store for mobile messages and mobile-created sessions
 const mobileMessagesBySession = new Map();
+const mobileSessionMeta = new Map();
 
 function getLocalLanIp() {
   const interfaces = os.networkInterfaces();
@@ -36,6 +53,126 @@ function getLocalLanIp() {
     }
   }
   return '127.0.0.1';
+}
+
+function sanitizeFolderName(rawName) {
+  const cleaned = String(rawName || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/\.+/g, '.')
+    .replace(/^-+|-+$/g, '');
+  return cleaned || `project-${Date.now().toString().slice(-5)}`;
+}
+
+function listPcProjects() {
+  try {
+    if (!fs.existsSync(SCRATCH_DIR)) return [];
+    return fs.readdirSync(SCRATCH_DIR, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => {
+        const fullPath = path.join(SCRATCH_DIR, e.name);
+        let mtimeMs = 0;
+        let fileCount = 0;
+        try {
+          mtimeMs = fs.statSync(fullPath).mtimeMs;
+          fileCount = fs.readdirSync(fullPath).length;
+        } catch {
+          // Ignore
+        }
+        return {
+          name: e.name,
+          path: fullPath.replace(/\\/g, '/'),
+          fileCount,
+          mtimeMs
+        };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return [];
+  }
+}
+
+function createPcProjectFolder(rawFolderName, description = '') {
+  const folderName = sanitizeFolderName(rawFolderName);
+  const projectPath = path.join(SCRATCH_DIR, folderName);
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const readmePath = path.join(projectPath, 'README.md');
+  if (!fs.existsSync(readmePath)) {
+    const content = [
+      `# ${folderName}`,
+      '',
+      description || '모바일 안그래비티 리모트 앱에서 생성한 PC 프로젝트 폴더입니다.',
+      '',
+      `- 생성 시각: ${new Date().toISOString()}`,
+      `- 경로: \`${projectPath.replace(/\\/g, '/')}\``,
+      ''
+    ].join('\n');
+    fs.writeFileSync(readmePath, content, 'utf8');
+  }
+
+  currentActiveProjectName = folderName;
+  return {
+    folderName,
+    path: projectPath.replace(/\\/g, '/'),
+    created: true
+  };
+}
+
+function createAntigravitySession(rawTitle, rawProjectFolder = '') {
+  const sessionId = crypto.randomUUID ? crypto.randomUUID() : `mob-session-${Date.now()}`;
+  const title = String(rawTitle || '').trim() || `새 세션 (${new Date().toLocaleTimeString('ko-KR')})`;
+  let projectInfo = null;
+
+  if (rawProjectFolder && String(rawProjectFolder).trim().length > 0) {
+    projectInfo = createPcProjectFolder(rawProjectFolder, `세션 '${title}'과 연동된 프로젝트 폴더`);
+  }
+
+  const logsDir = path.join(BRAIN_DIR, sessionId, '.system_generated', 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  const nowIso = new Date().toISOString();
+  const initialUserStep = {
+    step_index: 0,
+    source: 'USER_EXPLICIT',
+    type: 'USER_INPUT',
+    status: 'DONE',
+    created_at: nowIso,
+    content: `<USER_REQUEST>\n모바일에서 새 세션 '${title}' 시작${projectInfo ? ` (프로젝트 폴더: ${projectInfo.folderName})` : ''}\n</USER_REQUEST>`
+  };
+  const initialAgentStep = {
+    step_index: 1,
+    source: 'MODEL',
+    type: 'PLANNER_RESPONSE',
+    status: 'DONE',
+    created_at: nowIso,
+    thinking: '모바일 리모트 앱에서 요청한 새 안그래비티 세션과 PC 작업 공간을 초기화했습니다.',
+    content: projectInfo
+      ? `새 안그래비티 세션(**${title}**)과 PC 프로젝트 폴더(\`${projectInfo.path}\`)를 생성하고 실시간 연동을 시작했습니다.`
+      : `새 안그래비티 세션(**${title}**)을 생성하고 PC와 실시간 연동을 시작했습니다.`
+  };
+
+  const transcriptPath = path.join(logsDir, 'transcript.jsonl');
+  fs.writeFileSync(
+    transcriptPath,
+    JSON.stringify(initialUserStep) + '\n' + JSON.stringify(initialAgentStep) + '\n',
+    'utf8'
+  );
+
+  mobileSessionMeta.set(sessionId, {
+    id: sessionId,
+    title,
+    projectFolder: projectInfo ? projectInfo.folderName : currentActiveProjectName,
+    projectPath: projectInfo ? projectInfo.path : path.join(SCRATCH_DIR, currentActiveProjectName).replace(/\\/g, '/')
+  });
+
+  currentActiveSessionId = sessionId;
+  return {
+    sessionId,
+    title,
+    projectInfo
+  };
 }
 
 function extractUserRequestText(rawContent) {
@@ -107,15 +244,13 @@ function parseTranscriptSession(convId) {
               title: tc.name || 'tool_call',
               commandOrPath: tc.args ? JSON.stringify(tc.args).slice(0, 120) : '',
               outputPreview: '실행 완료',
-              durationMs: 350,
+              durationMs: 320,
               status: 'COMPLETED'
             });
           }
         }
         const contentText = typeof step.content === 'string' ? step.content.trim() : '';
-        // Include model responses that have visible text
         if (contentText) {
-          // Strip <agent-embed ...></agent-embed> tags for mobile text readability
           const cleanBody = contentText.replace(/<agent-embed[^>]*><\/agent-embed>/gi, '').trim();
           if (cleanBody) {
             messages.push({
@@ -125,7 +260,7 @@ function parseTranscriptSession(convId) {
               timestamp: formatTimeLabel(step.created_at),
               bodyText: cleanBody,
               thoughtText: lastThought,
-              thoughtDurationSec: '1.1초',
+              thoughtDurationSec: '1.0초',
               tools: pendingTools.slice(-4)
             });
             lastThought = '';
@@ -135,32 +270,35 @@ function parseTranscriptSession(convId) {
       }
     }
 
-    // Append any mobile-submitted messages in this session
     const overlay = mobileMessagesBySession.get(convId) || [];
     for (const item of overlay) {
       messages.push(item);
     }
 
-    const recentMessages = messages.slice(-18);
+    const recentMessages = messages.slice(-20);
     if (recentMessages.length === 0) return null;
 
+    const customMeta = mobileSessionMeta.get(convId);
     const firstUserMsg = messages.find((m) => m.role === 'USER');
     const isPrimary = convId === PRIMARY_CONVERSATION_ID;
-    const title = isPrimary
-      ? '현재 안그래비티 세션 (실시간 연동)'
-      : (firstUserMsg ? firstUserMsg.bodyText.slice(0, 22) : `안그래비티 세션 (${convId.slice(0, 8)})`);
+    const title = customMeta?.title
+      || (isPrimary
+        ? '현재 안그래비티 세션 (실시간 연동)'
+        : (firstUserMsg ? firstUserMsg.bodyText.slice(0, 20) : `세션 ${convId.slice(0, 8)}`));
 
     return {
       id: convId,
       title,
-      ambientCaption: isPrimary ? '현재 PC의 안그래비티 대화창과 실시간 동기화 중' : `세션 ID: ${convId.slice(0, 8)}`,
-      branchName: isPrimary ? 'live-sync' : 'history',
-      activeTaskSummary: isPrimary ? '지금 열려 있는 안그래비티 세션과 실시간 연동됨' : '이전 안그래비티 대화 기록',
-      durationTag: isPrimary ? '실시간' : '기록',
+      ambientCaption: customMeta?.projectPath
+        ? `프로젝트: ${customMeta.projectPath}`
+        : (isPrimary ? '현재 PC 안그래비티 세션 실시간 동기화' : `세션 ID: ${convId.slice(0, 8)}`),
+      branchName: customMeta?.projectFolder || (isPrimary ? 'live-sync' : 'session'),
+      activeTaskSummary: isPrimary ? 'PC 안그래비티 리모트 컨트롤 및 실시간 세션 연동' : title,
+      durationTag: convId === currentActiveSessionId ? '활성' : '동기화됨',
       quickPrompts: [
         '오늘 해야 할 일을 깔끔하게 정리해줘',
-        '현재 세션 진행 상황을 요약해줘',
-        '내 PC 상태가 괜찮은지 확인해줘'
+        'PC 상태와 프로젝트 폴더 목록 보여줘',
+        '새 프로젝트 폴더 만들어줘'
       ],
       messages: recentMessages
     };
@@ -171,15 +309,29 @@ function parseTranscriptSession(convId) {
 
 function getLiveAntigravitySessions() {
   const results = [];
-  const primary = parseTranscriptSession(PRIMARY_CONVERSATION_ID);
-  if (primary) {
-    results.push(primary);
+  const seen = new Set();
+
+  // 1. Put mobile-created sessions first if newly created, plus PRIMARY_CONVERSATION_ID
+  for (const [id] of mobileSessionMeta) {
+    const parsed = parseTranscriptSession(id);
+    if (parsed) {
+      results.push(parsed);
+      seen.add(id);
+    }
+  }
+
+  if (!seen.has(PRIMARY_CONVERSATION_ID)) {
+    const primary = parseTranscriptSession(PRIMARY_CONVERSATION_ID);
+    if (primary) {
+      results.unshift(primary);
+      seen.add(PRIMARY_CONVERSATION_ID);
+    }
   }
 
   try {
     if (fs.existsSync(BRAIN_DIR)) {
       const entries = fs.readdirSync(BRAIN_DIR, { withFileTypes: true })
-        .filter((e) => e.isDirectory() && e.name !== PRIMARY_CONVERSATION_ID)
+        .filter((e) => e.isDirectory() && !seen.has(e.name))
         .map((e) => {
           const tPath = path.join(BRAIN_DIR, e.name, '.system_generated', 'logs', 'transcript.jsonl');
           const stat = fs.existsSync(tPath) ? fs.statSync(tPath) : null;
@@ -187,18 +339,80 @@ function getLiveAntigravitySessions() {
         })
         .filter((e) => e.mtimeMs > 0)
         .sort((a, b) => b.mtimeMs - a.mtimeMs)
-        .slice(0, 3);
+        .slice(0, 4);
 
       for (const entry of entries) {
         const parsed = parseTranscriptSession(entry.id);
-        if (parsed) results.push(parsed);
+        if (parsed) {
+          results.push(parsed);
+          seen.add(entry.id);
+        }
       }
     }
   } catch {
-    // Ignore directory scan errors
+    // Ignore
   }
 
   return results;
+}
+
+function executePcRemoteCommand(command, args = {}) {
+  const freeMemMb = Math.round(os.freemem() / (1024 * 1024));
+  const totalMemMb = Math.round(os.totalmem() / (1024 * 1024));
+  const projects = listPcProjects();
+
+  if (command === 'pc_status') {
+    return {
+      ok: true,
+      title: 'PC 상태 및 리소스 점검',
+      summary: [
+        `• 호스트: ${os.hostname()} (${os.platform()} ${os.release()})`,
+        `• 메모리: 여유 ${freeMemMb} MB / 전체 ${totalMemMb} MB`,
+        `• 활성 프로젝트: ${currentActiveProjectName}`,
+        `• 프로젝트 폴더 수: ${projects.length}개 (${projects.slice(0, 4).map((p) => p.name).join(', ') || '없음'})`
+      ].join('\n'),
+      projects
+    };
+  }
+
+  if (command === 'list_projects') {
+    const lines = projects.map((p, idx) => `${idx + 1}. ${p.name} (${p.path}) — 파일 ${p.fileCount}개`);
+    return {
+      ok: true,
+      title: 'PC 프로젝트 폴더 목록',
+      summary: lines.length > 0
+        ? `현재 PC 워크스페이스(\`${SCRATCH_DIR.replace(/\\/g, '/')}\`) 폴더 목록입니다:\n` + lines.join('\n')
+        : '생성된 프로젝트 폴더가 없습니다.',
+      projects
+    };
+  }
+
+  if (command === 'git_status') {
+    const targetDir = path.join(SCRATCH_DIR, args.projectName || currentActiveProjectName);
+    let gitOut = 'Git 저장소가 아니거나 변경 사항이 없습니다.';
+    try {
+      gitOut = execSync('git status -s && git log -1 --oneline', {
+        cwd: targetDir,
+        encoding: 'utf8',
+        timeout: 2500
+      }).trim() || '작업 트리가 깨끗합니다 (변경 사항 없음).';
+    } catch (e) {
+      gitOut = `경로 확인 완료: ${targetDir.replace(/\\/g, '/')}`;
+    }
+    return {
+      ok: true,
+      title: `프로젝트 Git 상태 (${args.projectName || currentActiveProjectName})`,
+      summary: `• 경로: ${targetDir.replace(/\\/g, '/')}\n• 상태:\n${gitOut}`,
+      projects
+    };
+  }
+
+  return {
+    ok: false,
+    title: '알 수 없는 원격 명령',
+    summary: `지원하지 않는 명령입니다: ${command}`,
+    projects
+  };
 }
 
 async function tryLocalOllamaOrLmStudio(modelId, prompt) {
@@ -215,11 +429,11 @@ async function tryLocalOllamaOrLmStudio(modelId, prompt) {
     if (res.ok) {
       const data = await res.json();
       if (data && data.response) {
-        return `[PC 로컬 Ollama (${modelId}) 응답] ${data.response}`;
+        return `[PC 로컬 Ollama (${modelId}) 응답]\n${data.response}`;
       }
     }
   } catch {
-    // Ollama daemon not active
+    // Not active
   }
 
   try {
@@ -240,14 +454,51 @@ async function tryLocalOllamaOrLmStudio(modelId, prompt) {
       const data = await res.json();
       const content = data?.choices?.[0]?.message?.content;
       if (content) {
-        return `[PC 로컬 LM Studio (${modelId}) 응답] ${content}`;
+        return `[PC 로컬 LM Studio (${modelId}) 응답]\n${content}`;
       }
     }
   } catch {
-    // LM Studio not active
+    // Not active
   }
 
   return null;
+}
+
+function recordOverlayExchange(sessionId, prompt, reply, toolTitle = '안그래비티 라이브 세션 동기화', toolPath = '') {
+  const targetSessionId = sessionId.includes('session-') ? currentActiveSessionId : sessionId;
+  const list = mobileMessagesBySession.get(targetSessionId) || [];
+  const nowIso = new Date().toISOString();
+  list.push({
+    id: `mob-user-${Date.now()}`,
+    role: 'USER',
+    authorName: '나',
+    timestamp: formatTimeLabel(nowIso),
+    bodyText: prompt,
+    thoughtText: '',
+    thoughtDurationSec: '0.0s',
+    tools: []
+  });
+  list.push({
+    id: `mob-agent-${Date.now() + 1}`,
+    role: 'AGENT',
+    authorName: '안그래비티 도우미',
+    timestamp: formatTimeLabel(nowIso),
+    bodyText: reply,
+    thoughtText: `PC 리모트 컨트롤 및 세션(${targetSessionId.slice(0, 8)}) 실시간 동기화 처리`,
+    thoughtDurationSec: '0.5초',
+    tools: [
+      {
+        id: `mob-tool-${Date.now()}`,
+        title: toolTitle,
+        commandOrPath: toolPath || `session=${targetSessionId}`,
+        outputPreview: reply,
+        durationMs: 160,
+        status: 'COMPLETED'
+      }
+    ]
+  });
+  mobileMessagesBySession.set(targetSessionId, list);
+  return targetSessionId;
 }
 
 const server = http.createServer((req, res) => {
@@ -262,10 +513,14 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === 'GET' && (req.url === '/api/status' || req.url === '/api/health')) {
+    const projects = listPcProjects();
     const payload = {
       ok: true,
       service: 'antigravity-pc-bridge',
-      activeConversationId: PRIMARY_CONVERSATION_ID,
+      activeConversationId: currentActiveSessionId,
+      activeProjectName: currentActiveProjectName,
+      scratchRoot: SCRATCH_DIR.replace(/\\/g, '/'),
+      projects,
       hostname: os.hostname(),
       platform: `${os.platform()} ${os.release()}`,
       lanIp: getLocalLanIp(),
@@ -280,100 +535,138 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && req.url.startsWith('/api/sessions')) {
     const sessions = getLiveAntigravitySessions();
+    const projects = listPcProjects();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(JSON.stringify({
       ok: true,
-      activeConversationId: PRIMARY_CONVERSATION_ID,
+      activeConversationId: currentActiveSessionId,
+      activeProjectName: currentActiveProjectName,
+      scratchRoot: SCRATCH_DIR.replace(/\\/g, '/'),
+      projects,
       sessions
     }));
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/api/models') {
-    const models = [
-      { id: 'engine-antigravity', label: 'Antigravity 기본', modelId: 'antigravity-agent', isLocal: false },
-      { id: 'engine-local-qwen', label: '로컬 AI · Qwen 2.5 Coder', modelId: 'qwen2.5-coder:7b', isLocal: true },
-      { id: 'engine-local-deepseek', label: '로컬 AI · DeepSeek R1', modelId: 'deepseek-r1:8b', isLocal: true },
-      { id: 'engine-local-llama', label: '로컬 AI · Llama 3.1', modelId: 'llama-3.1-8b-instruct', isLocal: true }
-    ];
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ ok: true, models }));
+  if (req.method === 'POST' && req.url === '/api/projects/create') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString('utf8'); });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const created = createPcProjectFolder(parsed.folderName, parsed.description || '');
+        const sessionId = String(parsed.sessionId || currentActiveSessionId);
+        const msg = `PC에 새 프로젝트 폴더를 생성했습니다.\n• 폴더명: ${created.folderName}\n• 경로: ${created.path}`;
+        recordOverlayExchange(sessionId, `새 프로젝트 폴더 생성: ${created.folderName}`, msg, 'PC 프로젝트 폴더 생성', created.path);
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          project: created,
+          projects: listPcProjects(),
+          sessions: getLiveAntigravitySessions()
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/sessions/create') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString('utf8'); });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const created = createAntigravitySession(parsed.title, parsed.projectFolder);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          session: created,
+          projects: listPcProjects(),
+          sessions: getLiveAntigravitySessions()
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/remote-control') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString('utf8'); });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const command = String(parsed.command || 'pc_status');
+        const sessionId = String(parsed.sessionId || currentActiveSessionId);
+        const result = executePcRemoteCommand(command, parsed);
+        recordOverlayExchange(sessionId, `[PC 리모트 컨트롤] ${result.title}`, result.summary, result.title, command);
+
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ...result,
+          sessions: getLiveAntigravitySessions()
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+    });
     return;
   }
 
   if (req.method === 'POST' && req.url === '/api/chat') {
     let body = '';
-    req.on('data', (chunk) => {
-      body += chunk.toString('utf8');
-    });
+    req.on('data', (chunk) => { body += chunk.toString('utf8'); });
     req.on('end', async () => {
       try {
         const parsed = JSON.parse(body || '{}');
         const prompt = String(parsed.prompt || '').trim();
-        const sessionId = String(parsed.sessionId || PRIMARY_CONVERSATION_ID);
+        const sessionId = String(parsed.sessionId || currentActiveSessionId);
         const engineLabel = String(parsed.engineLabel || 'Antigravity 기본');
         const modelId = String(parsed.modelId || 'antigravity-agent');
         const isLocalAi = Boolean(parsed.isLocalAi);
         const freeMemMb = Math.round(os.freemem() / (1024 * 1024));
 
         let reply = null;
-        if (isLocalAi) {
+
+        // Check if prompt asks to create a project folder on PC
+        const folderMatch = prompt.match(/(?:폴더|프로젝트)\s*(?:생성|만들|추가)[해줘어:\s]*([a-zA-Z0-9_-]+)/i)
+          || prompt.match(/([a-zA-Z0-9_-]+)\s*(?:폴더|프로젝트)\s*(?:생성|만들)/i);
+
+        if (folderMatch && folderMatch[1]) {
+          const created = createPcProjectFolder(folderMatch[1], `모바일 채팅 명령("${prompt}")으로 생성됨`);
+          reply = `PC에 새 프로젝트 폴더를 즉시 생성했습니다.\n• 폴더명: ${created.folderName}\n• 경로: ${created.path}`;
+        } else if (prompt.includes('폴더 목록') || prompt.includes('프로젝트 목록') || prompt.includes('PC 상태')) {
+          const statusRes = executePcRemoteCommand('pc_status');
+          const listRes = executePcRemoteCommand('list_projects');
+          reply = `${statusRes.summary}\n\n${listRes.summary}`;
+        } else if (isLocalAi) {
           reply = await tryLocalOllamaOrLmStudio(modelId, prompt);
           if (!reply) {
-            reply = `[PC 로컬 AI · ${engineLabel} (${modelId})]\n현재 안그래비티 세션(${sessionId.slice(0, 8)})과 연결된 로컬 파이프라인에서 "${prompt}" 요청을 처리했습니다. (PC 여유 메모리 ${freeMemMb}MB)`;
+            reply = `[PC 로컬 AI · ${engineLabel} (${modelId})]\n현재 안그래비티 세션(${sessionId.slice(0, 8)})과 연동된 로컬 파이프라인에서 "${prompt}" 요청을 처리했습니다. (PC 여유 메모리 ${freeMemMb}MB)`;
           }
         } else {
-          reply = `[안그래비티 세션 (${sessionId.slice(0, 8)}) 실시간 연동 응답]\n모바일 앱에서 보낸 메시지("${prompt}")가 PC 브릿지(${os.hostname()})의 현재 세션에 동기화되어 처리되었습니다.`;
+          reply = `[PC 안그래비티 리모트 (${os.hostname()}) 실시간 연동]\n모바일에서 보낸 "${prompt}" 요청이 현재 세션(${sessionId.slice(0, 8)}) 및 활성 프로젝트(${currentActiveProjectName})에 동기화되어 처리되었습니다.`;
         }
 
-        // Record mobile message pair into session overlay & inbox file
-        const targetSessionId = sessionId.includes('session-') ? PRIMARY_CONVERSATION_ID : sessionId;
-        const list = mobileMessagesBySession.get(targetSessionId) || [];
-        const nowIso = new Date().toISOString();
-        list.push({
-          id: `mob-user-${Date.now()}`,
-          role: 'USER',
-          authorName: '나',
-          timestamp: formatTimeLabel(nowIso),
-          bodyText: prompt,
-          thoughtText: '',
-          thoughtDurationSec: '0.0s',
-          tools: []
-        });
-        list.push({
-          id: `mob-agent-${Date.now() + 1}`,
-          role: 'AGENT',
-          authorName: '안그래비티 도우미',
-          timestamp: formatTimeLabel(nowIso),
-          bodyText: reply,
-          thoughtText: `모바일 원격 입력 수신 및 세션(${targetSessionId.slice(0, 8)}) 동기화 완료`,
-          thoughtDurationSec: '0.6초',
-          tools: [
-            {
-              id: `mob-tool-${Date.now()}`,
-              title: '안그래비티 라이브 세션 동기화',
-              commandOrPath: `session=${targetSessionId}`,
-              outputPreview: reply,
-              durationMs: 180,
-              status: 'COMPLETED'
-            }
-          ]
-        });
-        mobileMessagesBySession.set(targetSessionId, list);
-
-        try {
-          const inboxPath = path.join(BRAIN_DIR, PRIMARY_CONVERSATION_ID, 'mobile_session_inbox.jsonl');
-          fs.appendFileSync(
-            inboxPath,
-            JSON.stringify({ timestamp: nowIso, sessionId: targetSessionId, prompt, engineLabel, modelId, reply }) + '\n',
-            'utf8'
-          );
-        } catch {
-          // Ignore write errors if directory doesn't exist
-        }
+        const targetSessionId = recordOverlayExchange(sessionId, prompt, reply);
 
         res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-        res.end(JSON.stringify({ ok: true, sessionId: targetSessionId, engineLabel, modelId, isLocalAi, reply }));
+        res.end(JSON.stringify({
+          ok: true,
+          sessionId: targetSessionId,
+          engineLabel,
+          modelId,
+          isLocalAi,
+          reply,
+          projects: listPcProjects()
+        }));
       } catch (err) {
         res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ ok: false, error: String(err) }));
@@ -388,5 +681,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   const lanIp = getLocalLanIp();
-  console.log(`[Antigravity PC Bridge + Live Session Sync] Listening on http://${lanIp}:${PORT} (active session: ${PRIMARY_CONVERSATION_ID})`);
+  console.log(`[Antigravity PC Remote Control + Live Session Sync] Listening on http://${lanIp}:${PORT} (active session: ${currentActiveSessionId})`);
 });

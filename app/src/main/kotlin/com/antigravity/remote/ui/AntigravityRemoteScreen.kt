@@ -91,8 +91,11 @@ import com.antigravity.remote.model.BridgeConnectionState
 import com.antigravity.remote.model.ChatMessage
 import com.antigravity.remote.model.InspectorViewMode
 import com.antigravity.remote.model.MessageRole
+import com.antigravity.remote.model.ReasoningEffort
 import com.antigravity.remote.model.WorkspaceSession
+import com.antigravity.remote.network.LiveSyncState
 import com.antigravity.remote.network.PcBridgeClient
+import com.antigravity.remote.network.PcProjectFolder
 import com.antigravity.remote.ui.theme.AntigravityIcons
 import com.antigravity.remote.ui.theme.AntigravityPalette
 import com.antigravity.remote.ui.theme.AntigravityTypography
@@ -121,9 +124,11 @@ fun AntigravityRemoteScreen() {
     var connectionState by remember { mutableStateOf(BridgeConnectionState.SIMULATION_ACTIVE) }
     var showSettingsSheet by rememberSaveable { mutableStateOf(false) }
 
-    // AI Engine & Local AI Selection (Lives in Settings; current choice shown softly in Header)
+    // AI Engine, Reasoning Effort & Local AI Selection
     val engineOptions = remember { AiEngineCatalog.options }
     var selectedEngineId by rememberSaveable { mutableStateOf(engineOptions.first().id) }
+    var selectedReasoning by rememberSaveable { mutableStateOf(ReasoningEffort.MEDIUM) }
+    var showModelReasoningPopup by rememberSaveable { mutableStateOf(false) }
     var customLocalModelId by rememberSaveable { mutableStateOf("qwen2.5-coder:7b") }
     val activeEngine by remember(selectedEngineId) {
         derivedStateOf {
@@ -135,6 +140,10 @@ fun AntigravityRemoteScreen() {
     } else {
         activeEngine.modelId
     }
+
+    // PC Projects synced from bridge
+    val pcProjects = remember { mutableStateListOf<PcProjectFolder>() }
+    var activePcProjectName by rememberSaveable { mutableStateOf("antigravity-remote-apk") }
 
     // Sessions state
     val normalSessions = remember {
@@ -162,10 +171,13 @@ fun AntigravityRemoteScreen() {
         derivedStateOf { activeSessions[activeSessionIndex] }
     }
 
-    // Streaming Engine State
+    // Streaming & Mid-Stream Steering (대화조정) State
     var activeStreamJob by remember { mutableStateOf<Job?>(null) }
+    var activeStreamingAgentMsgId by remember { mutableStateOf<String?>(null) }
     var isStreaming by remember { mutableStateOf(false) }
     var streamPhaseLabel by remember { mutableStateOf("답변을 준비하고 있습니다...") }
+    var steeringStatusLabel by remember { mutableStateOf("") }
+    val pendingSteerNotes = remember { mutableStateListOf<String>() }
 
     // Prompt Input
     var promptInput by rememberSaveable { mutableStateOf("") }
@@ -178,6 +190,19 @@ fun AntigravityRemoteScreen() {
 
     val listState = rememberLazyListState()
 
+    fun applyLiveSyncState(state: LiveSyncState?) {
+        if (state == null) return
+        connectionState = BridgeConnectionState.CONNECTED_PC
+        activePcProjectName = state.activeProjectName
+        pcProjects.clear()
+        pcProjects.addAll(state.projects)
+        if (state.sessions.isNotEmpty()) {
+            normalSessions.clear()
+            normalSessions.addAll(state.sessions)
+            selectedNormalIndex = 0
+        }
+    }
+
     suspend fun syncLiveSessionsFromBridge(host: String, port: Int) {
         val healthy = PcBridgeClient.checkBridgeHealth(host, port)
         connectionState = if (healthy) {
@@ -186,30 +211,79 @@ fun AntigravityRemoteScreen() {
             BridgeConnectionState.SIMULATION_ACTIVE
         }
         if (healthy) {
-            val liveSessions = PcBridgeClient.fetchLiveSessions(host, port)
-            if (!liveSessions.isNullOrEmpty()) {
-                normalSessions.clear()
-                normalSessions.addAll(liveSessions)
-                selectedNormalIndex = 0
-            }
+            val state = PcBridgeClient.fetchLiveSyncState(host, port)
+            applyLiveSyncState(state)
         }
     }
 
     // Non-blocking background check & live Antigravity session sync from PC Bridge
     LaunchedEffect(bridgeHost, bridgePortText) {
-        val port = bridgePortText.toIntOrNull() ?: 8765
+        val port = bridgePortText.toIntOrNull() ?: 8766
         syncLiveSessionsFromBridge(bridgeHost, port)
     }
 
     fun stopActiveStream() {
         activeStreamJob?.cancel()
         activeStreamJob = null
+        activeStreamingAgentMsgId = null
         isStreaming = false
+        steeringStatusLabel = ""
+        pendingSteerNotes.clear()
+    }
+
+    fun steerActiveStream(rawSteerPrompt: String) {
+        val trimmed = rawSteerPrompt.trim()
+        if (trimmed.isEmpty() || !isStreaming) return
+
+        val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
+        val targetList = if (viewMode == InspectorViewMode.WORST_CASE) worstCaseSessions else normalSessions
+        val idx = if (viewMode == InspectorViewMode.WORST_CASE) selectedWorstIndex else selectedNormalIndex
+        val session = targetList[idx]
+
+        val steerUserMessage = ChatMessage(
+            id = "steer-user-${System.currentTimeMillis()}",
+            role = MessageRole.USER,
+            authorName = "나",
+            timestamp = timeFmt,
+            bodyText = trimmed
+        )
+
+        pendingSteerNotes.add(trimmed)
+        steeringStatusLabel = "대화조정중 · 작업조정중 · 확인중"
+
+        val agentId = activeStreamingAgentMsgId
+        val updatedMessages = mutableListOf<ChatMessage>()
+        for (msg in session.messages) {
+            if (msg.id == agentId) {
+                // Insert user steering bubble right before the ongoing agent bubble and mark agent bubble with steering status
+                updatedMessages.add(steerUserMessage)
+                updatedMessages.add(
+                    msg.copy(
+                        steeringStatusText = "대화조정중 · 작업조정중 · 확인중 ($trimmed)"
+                    )
+                )
+            } else {
+                updatedMessages.add(msg)
+            }
+        }
+        targetList[idx] = session.copy(messages = updatedMessages)
+
+        coroutineScope.launch {
+            delay(350L)
+            if (isStreaming) steeringStatusLabel = "대화조정중 · 작업조정 반영중..."
+            delay(350L)
+            if (isStreaming) steeringStatusLabel = "작업조정중 · 확인중..."
+        }
     }
 
     fun triggerAgentPrompt(rawPrompt: String) {
         val trimmed = rawPrompt.trim()
         if (trimmed.isEmpty()) return
+
+        if (isStreaming) {
+            steerActiveStream(trimmed)
+            return
+        }
 
         if (viewMode == InspectorViewMode.EMPTY || viewMode == InspectorViewMode.ERROR || viewMode == InspectorViewMode.LOADING) {
             viewMode = InspectorViewMode.DEMO_NORMAL
@@ -219,6 +293,7 @@ fun AntigravityRemoteScreen() {
         val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
         val userMsgId = "user-${System.currentTimeMillis()}"
         val agentMsgId = "agent-${System.currentTimeMillis() + 1}"
+        activeStreamingAgentMsgId = agentMsgId
 
         val targetList = if (viewMode == InspectorViewMode.WORST_CASE) worstCaseSessions else normalSessions
         val idx = if (viewMode == InspectorViewMode.WORST_CASE) selectedWorstIndex else selectedNormalIndex
@@ -247,7 +322,7 @@ fun AntigravityRemoteScreen() {
         )
 
         isStreaming = true
-        val port = bridgePortText.toIntOrNull() ?: 8765
+        val port = bridgePortText.toIntOrNull() ?: 8766
 
         activeStreamJob = coroutineScope.launch {
             PcBridgeClient.streamAgentResponse(
@@ -257,7 +332,7 @@ fun AntigravityRemoteScreen() {
                 host = bridgeHost,
                 port = port,
                 timestamp = timeFmt,
-                engineLabel = activeEngine.shortName,
+                engineLabel = "${activeEngine.shortName} (${selectedReasoning.label})",
                 modelId = effectiveModelId,
                 isLocalAi = activeEngine.isLocal
             ).collect { frame ->
@@ -266,14 +341,39 @@ fun AntigravityRemoteScreen() {
                     connectionState = BridgeConnectionState.CONNECTED_PC
                 }
 
+                val steerSuffix = if (pendingSteerNotes.isNotEmpty()) {
+                    "\n\n• 실시간 조정 반영 (${pendingSteerNotes.joinToString(", ")}): 요청하신 방향에 맞춰 작업과 답변을 조정했습니다."
+                } else {
+                    ""
+                }
+                val steerBadge = if (pendingSteerNotes.isNotEmpty()) {
+                    if (frame.isFinished) {
+                        "대화조정 · 작업조정 확인 완료 (${pendingSteerNotes.last()})"
+                    } else {
+                        steeringStatusLabel.ifBlank { "대화조정중 · 작업조정중 · 확인중" }
+                    }
+                } else {
+                    ""
+                }
+
                 val latestSession = targetList[idx]
                 val updatedMessages = latestSession.messages.map { existing ->
-                    if (existing.id == agentMsgId) frame.message else existing
+                    if (existing.id == agentMsgId) {
+                        frame.message.copy(
+                            bodyText = if (frame.isFinished) frame.message.bodyText + steerSuffix else frame.message.bodyText,
+                            steeringStatusText = steerBadge
+                        )
+                    } else {
+                        existing
+                    }
                 }
                 targetList[idx] = latestSession.copy(messages = updatedMessages)
 
                 if (frame.isFinished) {
                     isStreaming = false
+                    activeStreamingAgentMsgId = null
+                    steeringStatusLabel = ""
+                    pendingSteerNotes.clear()
                 }
             }
         }
@@ -397,16 +497,21 @@ fun AntigravityRemoteScreen() {
             ) {
                 ActiveStreamBanner(
                     phaseLabel = streamPhaseLabel,
+                    steeringStatusLabel = steeringStatusLabel,
                     reducedMotion = reducedMotion,
                     onStopStream = { stopActiveStream() }
                 )
             }
 
-            // 4. Clean Bottom Input Bar with Gentle Suggestions
+            // 4. Clean Bottom Input Bar with Far-Right Model & Reasoning Selector + Mid-Stream Steering
             SimplePromptInputDock(
                 quickPrompts = currentSession.quickPrompts,
                 promptText = promptInput,
                 isStreaming = isStreaming,
+                activeEngine = activeEngine,
+                engines = engineOptions,
+                selectedReasoning = selectedReasoning,
+                showModelReasoningPopup = showModelReasoningPopup,
                 reducedMotion = reducedMotion,
                 onPromptTextChange = { promptInput = it },
                 onQuickPromptClick = { quickText ->
@@ -423,17 +528,28 @@ fun AntigravityRemoteScreen() {
                 },
                 onStopClick = {
                     stopActiveStream()
+                },
+                onToggleModelPopup = {
+                    showModelReasoningPopup = !showModelReasoningPopup
+                },
+                onSelectEngine = { engine ->
+                    selectedEngineId = engine.id
+                },
+                onSelectReasoning = { effort ->
+                    selectedReasoning = effort
                 }
             )
         }
 
-        // Unified Settings Dialog (Houses AI Model Choice, Session Switch/Reset, and Advanced Options)
+        // Unified Settings Dialog (Houses AI Model Choice, PC Live Session Creation, PC Project Folder Creation, Remote Control)
         if (showSettingsSheet) {
             UnifiedSettingsDialog(
                 engines = engineOptions,
                 selectedEngineId = selectedEngineId,
                 sessions = normalSessions,
                 selectedSessionIndex = selectedNormalIndex,
+                pcProjects = pcProjects,
+                activePcProjectName = activePcProjectName,
                 currentViewMode = viewMode,
                 initialHost = bridgeHost,
                 initialPort = bridgePortText,
@@ -446,6 +562,78 @@ fun AntigravityRemoteScreen() {
                 onSelectSession = { idx ->
                     selectedNormalIndex = idx
                     viewMode = InspectorViewMode.DEMO_NORMAL
+                },
+                onCreateRemoteSession = { sessionTitle, projectFolder ->
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    coroutineScope.launch {
+                        val state = PcBridgeClient.createRemoteSession(bridgeHost, port, sessionTitle, projectFolder)
+                        if (state != null) {
+                            applyLiveSyncState(state)
+                        } else {
+                            val newSession = WorkspaceSession(
+                                id = "local-session-${System.currentTimeMillis()}",
+                                title = sessionTitle.ifBlank { "새 세션" },
+                                ambientCaption = if (projectFolder.isNotBlank()) "프로젝트: $projectFolder" else "모바일 생성 세션",
+                                branchName = projectFolder.ifBlank { "main" },
+                                activeTaskSummary = "모바일에서 생성한 새 세션",
+                                durationTag = "방금",
+                                quickPrompts = listOf("오늘 해야 할 일을 깔끔하게 정리해줘", "새 프로젝트 구조를 잡아줘"),
+                                messages = listOf(
+                                    ChatMessage(
+                                        id = "init-${System.currentTimeMillis()}",
+                                        role = MessageRole.AGENT,
+                                        authorName = "안그래비티 도우미",
+                                        timestamp = "지금",
+                                        bodyText = "새 세션(${sessionTitle.ifBlank { "새 세션" }})을 시작했습니다."
+                                    )
+                                )
+                            )
+                            normalSessions.add(0, newSession)
+                            selectedNormalIndex = 0
+                        }
+                        viewMode = InspectorViewMode.DEMO_NORMAL
+                        showSettingsSheet = false
+                    }
+                },
+                onCreateRemoteProject = { folderName ->
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    coroutineScope.launch {
+                        val state = PcBridgeClient.createRemoteProjectFolder(
+                            host = bridgeHost,
+                            port = port,
+                            folderName = folderName,
+                            sessionId = currentSession.id
+                        )
+                        if (state != null) {
+                            applyLiveSyncState(state)
+                        } else {
+                            pcProjects.add(0, PcProjectFolder(folderName, "~/.gemini/antigravity/scratch/$folderName", 1))
+                            activePcProjectName = folderName
+                        }
+                        viewMode = InspectorViewMode.DEMO_NORMAL
+                    }
+                },
+                onExecuteRemoteCommand = { cmd ->
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    coroutineScope.launch {
+                        val state = PcBridgeClient.executeRemoteCommand(
+                            host = bridgeHost,
+                            port = port,
+                            command = cmd,
+                            sessionId = currentSession.id
+                        )
+                        if (state != null) {
+                            applyLiveSyncState(state)
+                        }
+                        viewMode = InspectorViewMode.DEMO_NORMAL
+                        showSettingsSheet = false
+                    }
+                },
+                onSyncNow = {
+                    val port = bridgePortText.toIntOrNull() ?: 8766
+                    coroutineScope.launch {
+                        syncLiveSessionsFromBridge(bridgeHost, port)
+                    }
                 },
                 onClearCurrentChat = {
                     val current = normalSessions[selectedNormalIndex]
@@ -460,13 +648,13 @@ fun AntigravityRemoteScreen() {
                 onDismiss = { showSettingsSheet = false },
                 onSaveSettings = { newHost, newPort, newLocalModel ->
                     bridgeHost = newHost.ifBlank { "127.0.0.1" }
-                    bridgePortText = newPort.ifBlank { "8765" }
+                    bridgePortText = newPort.ifBlank { "8766" }
                     customLocalModelId = newLocalModel.ifBlank { "qwen2.5-coder:7b" }
                     coroutineScope.launch {
                         connectionState = BridgeConnectionState.CONNECTING
                         syncLiveSessionsFromBridge(
                             bridgeHost,
-                            bridgePortText.toIntOrNull() ?: 8765
+                            bridgePortText.toIntOrNull() ?: 8766
                         )
                         showSettingsSheet = false
                     }
@@ -558,6 +746,19 @@ private fun ChatMessageCard(
                     text = message.bodyText,
                     style = AntigravityTypography.ChatBody
                 )
+
+                // Small-font live steering / task adjustment status ("대화조정중 · 작업조정중 · 확인중")
+                if (message.steeringStatusText.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = message.steeringStatusText,
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = AntigravityPalette.WarmLampGold,
+                            fontSize = 11.sp,
+                            lineHeight = 15.sp
+                        )
+                    )
+                }
 
                 // Optional Code Block (only when code is present)
                 if (!message.codeBlockContent.isNullOrBlank()) {
@@ -720,6 +921,7 @@ private fun CodeSnippetCard(
 @Composable
 private fun ActiveStreamBanner(
     phaseLabel: String,
+    steeringStatusLabel: String,
     reducedMotion: Boolean,
     onStopStream: () -> Unit
 ) {
@@ -761,12 +963,37 @@ private fun ActiveStreamBanner(
                         .background(AntigravityPalette.WarmLampGold.copy(alpha = effectiveAlpha))
                 )
                 Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = phaseLabel,
-                    style = AntigravityTypography.PillLabel,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = phaseLabel,
+                        style = AntigravityTypography.PillLabel,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (steeringStatusLabel.isNotBlank()) {
+                        Text(
+                            text = steeringStatusLabel,
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.WarmLampGold,
+                                fontSize = 11.sp,
+                                lineHeight = 14.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    } else {
+                        Text(
+                            text = "아래 입력창에서 실시간 대화조정 · 작업조정 가능",
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.MutedSlateInk,
+                                fontSize = 10.5.sp,
+                                lineHeight = 14.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
 
             Box(
@@ -798,15 +1025,29 @@ private fun SimplePromptInputDock(
     quickPrompts: List<String>,
     promptText: String,
     isStreaming: Boolean,
+    activeEngine: AiEngineOption,
+    engines: List<AiEngineOption>,
+    selectedReasoning: ReasoningEffort,
+    showModelReasoningPopup: Boolean,
     reducedMotion: Boolean,
     onPromptTextChange: (String) -> Unit,
     onQuickPromptClick: (String) -> Unit,
     onSendClick: () -> Unit,
-    onStopClick: () -> Unit
+    onStopClick: () -> Unit,
+    onToggleModelPopup: () -> Unit,
+    onSelectEngine: (AiEngineOption) -> Unit,
+    onSelectReasoning: (ReasoningEffort) -> Unit
 ) {
     val inputInteractionSource = remember { MutableInteractionSource() }
     val isFocused by inputInteractionSource.collectIsFocusedAsState()
     val sendButtonInteraction = remember { MutableInteractionSource() }
+    val modelPickerInteraction = remember { MutableInteractionSource() }
+
+    val activePrompts = if (isStreaming) {
+        listOf("핵심만 짧게 요약해줘", "코드 예시도 함께 추가해줘", "작업 방향을 단계별로 조정해줘")
+    } else {
+        quickPrompts
+    }
 
     Column(
         modifier = Modifier
@@ -814,19 +1055,146 @@ private fun SimplePromptInputDock(
             .background(AntigravityPalette.NightGround)
             .padding(bottom = 8.dp)
     ) {
-        // Gentle suggestion chips (Only shown when user hasn't started typing yet)
-        AnimatedVisibility(visible = promptText.isEmpty() && !isStreaming) {
+        // Floating Model & Reasoning Picker Popup (Aligned to the right above the chat dock, like Antigravity Desktop!)
+        AnimatedVisibility(
+            visible = showModelReasoningPopup,
+            enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(160)) + fadeIn(tween(160)),
+            exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(140)) + fadeOut(tween(140))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                contentAlignment = Alignment.CenterEnd
+            ) {
+                Surface(
+                    modifier = Modifier.widthIn(max = 310.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = AntigravityPalette.NightSurface
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "추론 강도 (Reasoning)",
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.MutedSlateInk,
+                                fontSize = 11.5.sp
+                            )
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            ReasoningEffort.entries.forEach { effort ->
+                                val selected = effort == selectedReasoning
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 38.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (selected) AntigravityPalette.NightRaised else AntigravityPalette.NightGround)
+                                        .clickable(role = Role.RadioButton) {
+                                            onSelectReasoning(effort)
+                                        }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = effort.label,
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "AI 모델 선택 (Model)",
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.MutedSlateInk,
+                                fontSize = 11.5.sp
+                            )
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 210.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            engines.forEach { engine ->
+                                val isSel = engine.id == activeEngine.id
+                                val tint = if (engine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 40.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (isSel) AntigravityPalette.NightRaised else Color.Transparent)
+                                        .clickable(role = Role.RadioButton) {
+                                            onSelectEngine(engine)
+                                            onToggleModelPopup()
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text(
+                                            text = engine.shortName,
+                                            style = AntigravityTypography.PillLabel.copy(
+                                                color = if (isSel) tint else AntigravityPalette.WarmIvoryInk,
+                                                fontSize = 12.5.sp
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = selectedReasoning.label,
+                                            style = AntigravityTypography.SecondaryBody.copy(
+                                                color = AntigravityPalette.MutedSlateInk,
+                                                fontSize = 11.sp
+                                            )
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isSel) "✓" else engine.providerTag,
+                                        style = AntigravityTypography.SecondaryBody.copy(
+                                            color = if (isSel) tint else AntigravityPalette.MutedSlateInk,
+                                            fontSize = 11.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Gentle suggestion or live mid-stream steering chips
+        AnimatedVisibility(visible = promptText.isEmpty()) {
             LazyRow(
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(quickPrompts) { chipText ->
+                items(activePrompts) { chipText ->
                     val chipInteraction = remember { MutableInteractionSource() }
                     Box(
                         modifier = Modifier
                             .widthIn(max = 260.dp)
-                            .defaultMinSize(minHeight = 44.dp)
+                            .defaultMinSize(minHeight = 42.dp)
                             .tactilePressScale(chipInteraction, reducedMotion)
                             .clip(RoundedCornerShape(22.dp))
                             .background(AntigravityPalette.NightSurface)
@@ -836,14 +1204,14 @@ private fun SimplePromptInputDock(
                                 role = Role.Button,
                                 onClick = { onQuickPromptClick(chipText) }
                             )
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Text(
-                            text = chipText,
+                            text = if (isStreaming) "조정 · $chipText" else chipText,
                             style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.WarmIvoryInk,
-                                fontSize = 13.sp
+                                color = if (isStreaming) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk,
+                                fontSize = 12.5.sp
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -853,7 +1221,7 @@ private fun SimplePromptInputDock(
             }
         }
 
-        // Clean Borderless Input Row
+        // Clean Borderless Input Row + Send/Steer Button + Far-Right Model & Reasoning Selector
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -866,15 +1234,15 @@ private fun SimplePromptInputDock(
                     .defaultMinSize(minHeight = 48.dp)
                     .clip(RoundedCornerShape(24.dp))
                     .background(if (isFocused) AntigravityPalette.NightRaised else AntigravityPalette.NightSurface)
-                    .padding(horizontal = 18.dp, vertical = 12.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
                 if (promptText.isEmpty()) {
                     Text(
-                        text = "편하게 물어보세요...",
+                        text = if (isStreaming) "생각·작업 중 추가 대화조정 입력..." else "편하게 물어보세요...",
                         style = AntigravityTypography.SecondaryBody.copy(
-                            color = AntigravityPalette.MutedSlateInk,
-                            fontSize = 14.sp
+                            color = if (isStreaming) AntigravityPalette.WarmLampGold else AntigravityPalette.MutedSlateInk,
+                            fontSize = 13.5.sp
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -884,7 +1252,7 @@ private fun SimplePromptInputDock(
                     value = promptText,
                     onValueChange = onPromptTextChange,
                     interactionSource = inputInteractionSource,
-                    textStyle = AntigravityTypography.ChatBody.copy(fontSize = 15.sp),
+                    textStyle = AntigravityTypography.ChatBody.copy(fontSize = 14.5.sp),
                     cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
                     maxLines = 4,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
@@ -893,12 +1261,13 @@ private fun SimplePromptInputDock(
                 )
             }
 
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(8.dp))
 
             val canSend = promptText.isNotBlank()
             val buttonBg = when {
-                isStreaming -> AntigravityPalette.SoftCoralDanger
+                isStreaming && canSend -> AntigravityPalette.WarmLampGold
                 canSend -> AntigravityPalette.CalmSageAccent
+                isStreaming -> AntigravityPalette.SoftCoralDanger
                 else -> AntigravityPalette.NightRaised
             }
             val iconTint = when {
@@ -908,7 +1277,7 @@ private fun SimplePromptInputDock(
 
             Box(
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(46.dp)
                     .tactilePressScale(sendButtonInteraction, reducedMotion)
                     .clip(CircleShape)
                     .background(buttonBg)
@@ -917,20 +1286,61 @@ private fun SimplePromptInputDock(
                         indication = null,
                         role = Role.Button,
                         onClick = {
-                            if (isStreaming) onStopClick() else onSendClick()
+                            if (isStreaming && !canSend) onStopClick() else onSendClick()
                         }
                     )
                     .semantics {
-                        contentDescription = if (isStreaming) "스트리밍 중지" else "메시지 전송"
+                        contentDescription = if (isStreaming && !canSend) "스트리밍 중지" else "메시지 전송"
                     },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = if (isStreaming) AntigravityIcons.StopSquare else AntigravityIcons.SendArrow,
+                    imageVector = if (isStreaming && !canSend) AntigravityIcons.StopSquare else AntigravityIcons.SendArrow,
                     contentDescription = null,
                     tint = iconTint,
-                    modifier = Modifier.size(20.dp)
+                    modifier = Modifier.size(19.dp)
                 )
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // Far-Right Model & Reasoning Selector Button ("채팅창 맨오른쪽에 모델 및 추론 선택")
+            Surface(
+                modifier = Modifier
+                    .defaultMinSize(minHeight = 46.dp)
+                    .tactilePressScale(modelPickerInteraction, reducedMotion)
+                    .clickable(
+                        interactionSource = modelPickerInteraction,
+                        indication = null,
+                        role = Role.Button,
+                        onClick = onToggleModelPopup
+                    )
+                    .semantics {
+                        contentDescription = "모델 및 추론 선택"
+                    },
+                shape = RoundedCornerShape(18.dp),
+                color = AntigravityPalette.NightSurface
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${activeEngine.shortName.take(8)}·${selectedReasoning.label}",
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = if (activeEngine.isLocal) AntigravityPalette.WarmLampGold else AntigravityPalette.CalmSageAccent,
+                            fontSize = 11.5.sp
+                        ),
+                        maxLines = 1
+                    )
+                    Spacer(modifier = Modifier.width(3.dp))
+                    Icon(
+                        imageVector = if (showModelReasoningPopup) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
+                        contentDescription = null,
+                        tint = AntigravityPalette.MistSlateInk,
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
             }
         }
     }
@@ -947,6 +1357,8 @@ private fun UnifiedSettingsDialog(
     selectedEngineId: String,
     sessions: List<WorkspaceSession>,
     selectedSessionIndex: Int,
+    pcProjects: List<PcProjectFolder>,
+    activePcProjectName: String,
     currentViewMode: InspectorViewMode,
     initialHost: String,
     initialPort: String,
@@ -955,6 +1367,10 @@ private fun UnifiedSettingsDialog(
     reducedMotion: Boolean,
     onSelectEngine: (AiEngineOption) -> Unit,
     onSelectSession: (Int) -> Unit,
+    onCreateRemoteSession: (String, String) -> Unit,
+    onCreateRemoteProject: (String) -> Unit,
+    onExecuteRemoteCommand: (String) -> Unit,
+    onSyncNow: () -> Unit,
     onClearCurrentChat: () -> Unit,
     onSelectViewMode: (InspectorViewMode) -> Unit,
     onDismiss: () -> Unit,
@@ -963,6 +1379,8 @@ private fun UnifiedSettingsDialog(
     var hostInput by rememberSaveable { mutableStateOf(initialHost) }
     var portInput by rememberSaveable { mutableStateOf(initialPort) }
     var localModelInput by rememberSaveable { mutableStateOf(initialLocalModel) }
+    var newSessionTitleInput by rememberSaveable { mutableStateOf("") }
+    var newProjectFolderInput by rememberSaveable { mutableStateOf("") }
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
 
     AlertDialog(
@@ -1043,36 +1461,226 @@ private fun UnifiedSettingsDialog(
                     }
                 }
 
-                // Section 2: Conversation Topic & Reset
+                // Section 2: PC Live Session Sync & New Session Creation
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "2. 대화방 선택 및 초기화",
-                    style = AntigravityTypography.PillLabel.copy(color = AntigravityPalette.CalmSageAccent)
-                )
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "2. PC 실시간 세션 연동 · 새 세션 생성",
+                        style = AntigravityTypography.PillLabel.copy(color = AntigravityPalette.CalmSageAccent)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(AntigravityPalette.NightGround)
+                            .clickable(role = Role.Button, onClick = onSyncNow)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            text = "실시간 동기화",
+                            style = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.CalmSageAccent,
+                                fontSize = 11.5.sp
+                            )
+                        )
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     sessions.forEachIndexed { idx, session ->
                         val selected = idx == selectedSessionIndex && currentViewMode == InspectorViewMode.DEMO_NORMAL
-                        Box(
+                        Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .defaultMinSize(minHeight = 48.dp)
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 44.dp)
                                 .clip(RoundedCornerShape(12.dp))
                                 .background(if (selected) AntigravityPalette.CalmSageDim else AntigravityPalette.NightGround)
                                 .clickable(role = Role.Button) {
                                     onSelectSession(idx)
+                                    onDismiss()
                                 }
-                                .padding(horizontal = 10.dp, vertical = 10.dp),
-                            contentAlignment = Alignment.Center
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
                                 text = session.title,
                                 style = AntigravityTypography.PillLabel.copy(
                                     color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk,
                                     fontSize = 12.sp
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = session.durationTag,
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.MutedSlateInk,
+                                    fontSize = 11.sp
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // Create New Session on PC from Mobile
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AntigravityPalette.NightGround)
+                            .padding(horizontal = 12.dp, vertical = 11.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (newSessionTitleInput.isEmpty()) {
+                            Text(
+                                text = "새 세션 이름 입력...",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.MutedSlateInk,
+                                    fontSize = 12.sp
+                                )
+                            )
+                        }
+                        BasicTextField(
+                            value = newSessionTitleInput,
+                            onValueChange = { newSessionTitleInput = it },
+                            textStyle = AntigravityTypography.SecondaryBody.copy(color = AntigravityPalette.WarmIvoryInk),
+                            cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AntigravityPalette.CalmSageAccent)
+                            .clickable(role = Role.Button) {
+                                val title = newSessionTitleInput.ifBlank { "모바일 새 세션" }
+                                newSessionTitleInput = ""
+                                onCreateRemoteSession(title, newProjectFolderInput)
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "+ 새 세션 생성",
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = AntigravityPalette.DeepForestInk,
+                                fontSize = 12.sp
+                            )
+                        )
+                    }
+                }
+
+                // Section 3: PC Project Folder Creation & PC Remote Control
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "3. PC 프로젝트 폴더 생성 · 리모트 컨트롤",
+                    style = AntigravityTypography.PillLabel.copy(color = AntigravityPalette.WarmLampGold)
+                )
+
+                Text(
+                    text = "활성 폴더: ~/.gemini/antigravity/scratch/$activePcProjectName (총 ${pcProjects.size.coerceAtLeast(1)}개)",
+                    style = AntigravityTypography.SecondaryBody.copy(fontSize = 11.5.sp)
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .defaultMinSize(minHeight = 44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AntigravityPalette.NightGround)
+                            .padding(horizontal = 12.dp, vertical = 11.dp),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (newProjectFolderInput.isEmpty()) {
+                            Text(
+                                text = "새 프로젝트 폴더명 (예: my-new-app)",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.MutedSlateInk,
+                                    fontSize = 12.sp
+                                )
+                            )
+                        }
+                        BasicTextField(
+                            value = newProjectFolderInput,
+                            onValueChange = { newProjectFolderInput = it },
+                            textStyle = AntigravityTypography.CodeMono,
+                            cursorBrush = SolidColor(AntigravityPalette.WarmLampGold),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .defaultMinSize(minHeight = 44.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(AntigravityPalette.WarmLampGold)
+                            .clickable(role = Role.Button) {
+                                val folder = newProjectFolderInput.ifBlank { "mobile-project-${System.currentTimeMillis() % 1000}" }
+                                newProjectFolderInput = ""
+                                onCreateRemoteProject(folder)
+                                onDismiss()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "+ 폴더 생성",
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = AntigravityPalette.DeepForestInk,
+                                fontSize = 12.sp
+                            )
+                        )
+                    }
+                }
+
+                // Quick PC Remote Control Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        "pc_status" to "PC 상태 점검",
+                        "list_projects" to "폴더 목록 조회",
+                        "git_status" to "Git 상태 확인"
+                    ).forEach { (cmdKey, cmdLabel) ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .defaultMinSize(minHeight = 42.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(AntigravityPalette.NightGround)
+                                .clickable(role = Role.Button) {
+                                    onExecuteRemoteCommand(cmdKey)
+                                }
+                                .padding(horizontal = 6.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = cmdLabel,
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.WarmIvoryInk,
+                                    fontSize = 11.5.sp
                                 ),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -1084,7 +1692,7 @@ private fun UnifiedSettingsDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 48.dp)
+                        .defaultMinSize(minHeight = 44.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(AntigravityPalette.NightGround)
                         .clickable(role = Role.Button, onClick = onClearCurrentChat)
