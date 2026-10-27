@@ -1,13 +1,14 @@
 package com.antigravity.remote
 
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,11 +27,11 @@ class AntigravityRemoteInstrumentedTest {
         composeTestRule.onNodeWithContentDescription("메시지 전송").assertIsDisplayed()
 
         // Verify removed clutter (header status, author names, timestamps) does NOT exist on the main screen
-        composeTestRule.onNodeWithText("기본 AI · 내 PC와 연결됨").assertDoesNotExist()
-        composeTestRule.onNodeWithText("나").assertDoesNotExist()
-        composeTestRule.onNodeWithText("안그래비티 도우미").assertDoesNotExist()
-        composeTestRule.onNodeWithText("오후 11:42").assertDoesNotExist()
-        composeTestRule.onNodeWithText("오후 11:43").assertDoesNotExist()
+        assertTrue(composeTestRule.onAllNodesWithText("기본 AI · 내 PC와 연결됨").fetchSemanticsNodes().isEmpty())
+        assertTrue(composeTestRule.onAllNodesWithText("나").fetchSemanticsNodes().isEmpty())
+        assertTrue(composeTestRule.onAllNodesWithText("안그래비티 도우미").fetchSemanticsNodes().isEmpty())
+        assertTrue(composeTestRule.onAllNodesWithText("오후 11:42").fetchSemanticsNodes().isEmpty())
+        assertTrue(composeTestRule.onAllNodesWithText("오후 11:43").fetchSemanticsNodes().isEmpty())
 
         // 2. Open Settings to select Local AI and inspect options
         composeTestRule.onNodeWithText("설정").performClick()
