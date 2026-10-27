@@ -10,11 +10,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.expandIn
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -768,7 +772,7 @@ fun AntigravityRemoteScreen() {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 56.dp),
+                .padding(start = 8.dp, end = 8.dp, top = 54.dp),
             contentAlignment = Alignment.TopStart
         ) {
             val strongEaseOut = remember { CubicBezierEasing(0.23f, 1f, 0.32f, 1f) }
@@ -1984,11 +1988,119 @@ private fun PlusActionRow(
 }
 
 /**
+ * Animated Session Status Icon:
+ * - Running (진행중): Smooth 360-degree rotating open-arc spinner icon (matching PC Antigravity Conversations list)
+ * - Paused/Stopped (멈춤): Crisp minimal pause bars icon with smooth scale/alpha transition
+ */
+@Composable
+private fun SessionStatusAnimatedIcon(
+    isRunning: Boolean,
+    isSelected: Boolean,
+    reducedMotion: Boolean,
+    onToggleState: () -> Unit
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "sessionStatusSpinner")
+    val rotationDeg by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1050, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "spinnerRotation"
+    )
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "spinnerPulse"
+    )
+
+    val activeTint = if (isSelected) {
+        AntigravityPalette.CalmSageAccent
+    } else if (isRunning) {
+        AntigravityPalette.WarmIvoryInk.copy(alpha = if (reducedMotion) 0.75f else pulseAlpha)
+    } else {
+        AntigravityPalette.WarmLampGold.copy(alpha = 0.72f)
+    }
+
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClick = onToggleState
+            )
+            .semantics {
+                contentDescription = if (isRunning) "세션 진행중 아이콘" else "세션 멈춤 아이콘"
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        if (isRunning) {
+            Canvas(
+                modifier = Modifier
+                    .size(14.dp)
+                    .graphicsLayer {
+                        rotationZ = if (reducedMotion) 0f else rotationDeg
+                    }
+            ) {
+                // Subtle background track circle
+                drawCircle(
+                    color = activeTint.copy(alpha = 0.18f),
+                    style = Stroke(width = 1.7.dp.toPx())
+                )
+                // Spinning 260-degree arc (matches PC Antigravity sidebar spinner)
+                drawArc(
+                    color = activeTint,
+                    startAngle = -90f,
+                    sweepAngle = 255f,
+                    useCenter = false,
+                    style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
+                )
+            }
+        } else {
+            // Paused / Stopped icon (subtle ring + twin pause bars)
+            Canvas(modifier = Modifier.size(14.dp)) {
+                drawCircle(
+                    color = activeTint.copy(alpha = 0.22f),
+                    style = Stroke(width = 1.5.dp.toPx())
+                )
+                val barW = 1.7.dp.toPx()
+                val topY = size.height * 0.32f
+                val botY = size.height * 0.68f
+                val leftX = size.width * 0.39f
+                val rightX = size.width * 0.61f
+                drawLine(
+                    color = activeTint,
+                    start = Offset(leftX, topY),
+                    end = Offset(leftX, botY),
+                    strokeWidth = barW,
+                    cap = StrokeCap.Round
+                )
+                drawLine(
+                    color = activeTint,
+                    start = Offset(rightX, topY),
+                    end = Offset(rightX, botY),
+                    strokeWidth = barW,
+                    cap = StrokeCap.Round
+                )
+            }
+        }
+    }
+}
+
+/**
  * Top-Left Session & Project Folder Popover:
  * Expands directly from the top-left icon (TransformOrigin(0.04f, 0.0f)) and shows:
  * - Current Session Name (세션명) & Active Project Folder Name (프로젝트 폴더명)
- * - Live PC Sessions list (with each session's 세션명 & 연결된 프로젝트 폴더명) + [+ 새 세션 생성]
- * - PC Project Folders list (프로젝트 폴더명 선택) + [+ 폴더 생성]
+ * - Live PC Sessions list (with animated 진행중/멈춤 status icon) + Icon-only [+] button to create session (no search/text input box!)
+ * - PC Project Folders list + Icon-only [+] button to create folder (no search/text input box!)
  */
 @Composable
 private fun TopLeftSessionAndProjectPopover(
@@ -2007,8 +2119,8 @@ private fun TopLeftSessionAndProjectPopover(
     onSyncNow: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var newSessionTitleInput by rememberSaveable { mutableStateOf("") }
-    var newProjectFolderInput by rememberSaveable { mutableStateOf("") }
+    val reducedMotion = rememberReducedMotion()
+    val pausedSessionIds = remember { mutableStateMapOf<String, Boolean>() }
 
     val popoverBg = Color(0xFF0C0C10).copy(alpha = 0.96f)
     val cardBg = Color(0xFF15151C).copy(alpha = 0.56f)
@@ -2030,7 +2142,7 @@ private fun TopLeftSessionAndProjectPopover(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 520.dp)
+                .heightIn(min = 480.dp, max = 690.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -2096,10 +2208,10 @@ private fun TopLeftSessionAndProjectPopover(
                 }
 
                 Text(
-                    text = "세션명: ${activeSession?.title ?: "현재 안그래비티 세션"}",
+                    text = "세션명: ${activeSession?.title ?: "Anti-Gravity Program APK Conversion"}",
                     style = AntigravityTypography.PillLabel.copy(
                         color = AntigravityPalette.WarmIvoryInk,
-                        fontSize = 11.5.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
                     ),
                     maxLines = 1,
@@ -2110,230 +2222,195 @@ private fun TopLeftSessionAndProjectPopover(
                     text = "프로젝트 폴더명: $activePcProjectName (~/.gemini/antigravity/scratch/$activePcProjectName)",
                     style = AntigravityTypography.SecondaryBody.copy(
                         color = AntigravityPalette.WarmLampGold.copy(alpha = 0.90f),
-                        fontSize = 10.5.sp
+                        fontSize = 11.sp
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            // 2. Live PC Sessions List (Shows both Session Name & Project Folder Name) + Create New Session
-            Text(
-                text = "세션 목록 (세션명 · 프로젝트 폴더명) · 새 세션 생성",
-                style = AntigravityTypography.PillLabel.copy(
-                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
-                    fontSize = 11.sp
+            // 2. Live PC Sessions Header Row: Conversations on Left, Icon-Only [+] Create Session Button on Right
+            val addSessionInteraction = remember { MutableInteractionSource() }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Conversations",
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f),
+                        fontSize = 11.5.sp
+                    )
                 )
-            )
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .tactilePressScale(addSessionInteraction, reducedMotion)
+                        .clip(CircleShape)
+                        .background(cardBg)
+                        .clickable(
+                            interactionSource = addSessionInteraction,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = {
+                                onCreateRemoteSession("새 안그래비티 세션 ${sessions.size + 1}", activePcProjectName)
+                            }
+                        )
+                        .semantics {
+                            contentDescription = "+ 새 세션 생성"
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AntigravityIcons.PlusStroke,
+                        contentDescription = null,
+                        tint = AntigravityPalette.CalmSageAccent,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+            }
 
+            // Expanded Session List Layout (Taller height & spacious item cards)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 176.dp)
+                    .heightIn(min = 280.dp, max = 420.dp)
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
+                verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 sessions.forEachIndexed { idx, session ->
                     val selected = idx == selectedSessionIndex && currentViewMode == InspectorViewMode.DEMO_NORMAL
                     val folderLabel = session.branchName
                         .takeIf { it.isNotBlank() && it != "session" && it != "live-sync" }
                         ?: activePcProjectName
+                    val defaultRunning = session.durationTag != "paused" && session.durationTag != "멈춤"
+                    val isPausedOverride = pausedSessionIds[session.id]
+                    val isRunning = isPausedOverride?.not() ?: defaultRunning
 
-                    Column(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
+                            .defaultMinSize(minHeight = 56.dp)
+                            .clip(RoundedCornerShape(14.dp))
                             .background(if (selected) selectedCardBg else cardBg)
                             .clickable(role = Role.Button) {
                                 onSelectSession(idx)
                             }
-                            .padding(horizontal = 11.dp, vertical = 7.dp)
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        Column(
+                            modifier = Modifier.weight(1f)
                         ) {
                             Text(
                                 text = session.title,
                                 style = AntigravityTypography.PillLabel.copy(
-                                    color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
-                                    fontSize = 11.5.sp,
+                                    color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.92f),
+                                    fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold
                                 ),
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
+                                overflow = TextOverflow.Ellipsis
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                text = session.durationTag,
+                                text = "폴더 · $folderLabel",
                                 style = AntigravityTypography.SecondaryBody.copy(
-                                    color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
-                                    fontSize = 10.sp
-                                )
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f),
+                                    fontSize = 11.sp
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        Spacer(modifier = Modifier.height(1.dp))
-                        Text(
-                            text = "프로젝트 폴더: $folderLabel",
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.50f),
-                                fontSize = 10.sp
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        // Animated Running (진행중 spinner) / Paused (멈춤 bars) icon
+                        SessionStatusAnimatedIcon(
+                            isRunning = isRunning,
+                            isSelected = selected,
+                            reducedMotion = reducedMotion,
+                            onToggleState = {
+                                pausedSessionIds[session.id] = isRunning
+                            }
                         )
                     }
                 }
             }
 
-            // Create New Session Row
+            // 3. Project Folders Row: NO "PC 프로젝트 폴더 목록 (총 9개) · 새 폴더 생성" text!
+            // Instead, Icon-Only [+] Create Folder Button + Expanded Folder Chips in a clean row
+            val addFolderInteraction = remember { MutableInteractionSource() }
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .weight(1f)
-                        .defaultMinSize(minHeight = 38.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .size(34.dp)
+                        .tactilePressScale(addFolderInteraction, reducedMotion)
+                        .clip(CircleShape)
                         .background(cardBg)
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    if (newSessionTitleInput.isEmpty()) {
-                        Text(
-                            text = "새 세션 이름 입력...",
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.36f),
-                                fontSize = 11.5.sp
-                            )
+                        .clickable(
+                            interactionSource = addFolderInteraction,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = {
+                                val nextFolder = "project-${(pcProjects.size + 1).toString().padStart(2, '0')}"
+                                onCreateRemoteProject(nextFolder)
+                            }
                         )
-                    }
-                    BasicTextField(
-                        value = newSessionTitleInput,
-                        onValueChange = { newSessionTitleInput = it },
-                        textStyle = AntigravityTypography.SecondaryBody.copy(color = AntigravityPalette.WarmIvoryInk),
-                        cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .defaultMinSize(minHeight = 38.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(AntigravityPalette.CalmSageAccent.copy(alpha = 0.85f))
-                        .clickable(role = Role.Button) {
-                            val title = newSessionTitleInput.ifBlank { "모바일 새 세션" }
-                            newSessionTitleInput = ""
-                            onCreateRemoteSession(title, newProjectFolderInput)
-                        }
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                        .semantics {
+                            contentDescription = "+ 폴더 생성"
+                        },
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(
-                        text = "+ 새 세션 생성",
-                        style = AntigravityTypography.PillLabel.copy(
-                            color = AntigravityPalette.DeepForestInk,
-                            fontSize = 11.sp
-                        )
+                    Icon(
+                        imageVector = AntigravityIcons.PlusStroke,
+                        contentDescription = null,
+                        tint = AntigravityPalette.WarmLampGold,
+                        modifier = Modifier.size(15.dp)
                     )
                 }
-            }
 
-            // 3. PC Project Folders List & New Folder Creation
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "PC 프로젝트 폴더 목록 (총 ${pcProjects.size.coerceAtLeast(1)}개) · 새 폴더 생성",
-                style = AntigravityTypography.PillLabel.copy(
-                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
-                    fontSize = 11.sp
-                )
-            )
-
-            if (pcProjects.isNotEmpty()) {
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(pcProjects) { proj ->
-                        val isActiveProj = proj.name == activePcProjectName
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (isActiveProj) selectedCardBg else cardBg)
-                                .clickable(role = Role.Button) {
-                                    onSelectProjectFolder(proj.name)
-                                }
-                                .padding(horizontal = 10.dp, vertical = 6.dp)
-                        ) {
-                            Text(
-                                text = "${proj.name} (${proj.fileCount})",
-                                style = AntigravityTypography.SecondaryBody.copy(
-                                    color = if (isActiveProj) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
-                                    fontSize = 10.5.sp
+                if (pcProjects.isNotEmpty()) {
+                    LazyRow(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        items(pcProjects) { proj ->
+                            val isActiveProj = proj.name == activePcProjectName
+                            Box(
+                                modifier = Modifier
+                                    .defaultMinSize(minHeight = 34.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isActiveProj) selectedCardBg else cardBg)
+                                    .clickable(role = Role.Button) {
+                                        onSelectProjectFolder(proj.name)
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 7.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = proj.name,
+                                    style = AntigravityTypography.SecondaryBody.copy(
+                                        color = if (isActiveProj) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
+                                        fontSize = 11.5.sp,
+                                        fontWeight = if (isActiveProj) FontWeight.SemiBold else FontWeight.Normal
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .defaultMinSize(minHeight = 38.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(cardBg)
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    contentAlignment = Alignment.CenterStart
-                ) {
-                    if (newProjectFolderInput.isEmpty()) {
-                        Text(
-                            text = "새 프로젝트 폴더명 (예: my-new-app)",
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.36f),
-                                fontSize = 11.5.sp
-                            )
-                        )
-                    }
-                    BasicTextField(
-                        value = newProjectFolderInput,
-                        onValueChange = { newProjectFolderInput = it },
-                        textStyle = AntigravityTypography.CodeMono,
-                        cursorBrush = SolidColor(AntigravityPalette.WarmLampGold),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                Box(
-                    modifier = Modifier
-                        .defaultMinSize(minHeight = 38.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(AntigravityPalette.WarmLampGold.copy(alpha = 0.85f))
-                        .clickable(role = Role.Button) {
-                            val folder = newProjectFolderInput.ifBlank { "mobile-project-${System.currentTimeMillis() % 1000}" }
-                            newProjectFolderInput = ""
-                            onCreateRemoteProject(folder)
-                        }
-                        .padding(horizontal = 12.dp, vertical = 9.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "+ 폴더 생성",
-                        style = AntigravityTypography.PillLabel.copy(
-                            color = AntigravityPalette.DeepForestInk,
-                            fontSize = 11.sp
-                        )
-                    )
                 }
             }
         }

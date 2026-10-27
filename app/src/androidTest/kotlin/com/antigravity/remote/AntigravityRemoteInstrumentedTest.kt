@@ -31,8 +31,9 @@ class AntigravityRemoteInstrumentedTest {
         // 1-b. Tap top-left icon to expand the Session & Project Folder Popover from the icon
         composeTestRule.onNodeWithContentDescription("세션 및 프로젝트 폴더 열기").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("세션 목록 (세션명 · 프로젝트 폴더명) · 새 세션 생성").assertIsDisplayed()
-        composeTestRule.onNodeWithText("+ 새 세션 생성").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Conversations").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("+ 새 세션 생성").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("+ 폴더 생성").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("세션 및 프로젝트 폴더 열기").performClick()
         composeTestRule.waitForIdle()
 

@@ -375,6 +375,9 @@ function parseTranscriptSession(convId) {
       }
     }
 
+    const lastMsgMs = recentMessages[recentMessages.length - 1]?.createdAtMs || 0;
+    const isRecentlyActive = isPrimary || (Date.now() - lastMsgMs < 3600 * 1000 * 6);
+
     return {
       id: convId,
       title,
@@ -383,7 +386,7 @@ function parseTranscriptSession(convId) {
         : `폴더: ${inferredFolder}`,
       branchName: inferredFolder,
       activeTaskSummary: isPrimary ? 'PC 안그래비티 리모트 컨트롤 및 실시간 세션 연동' : title,
-      durationTag: convId === currentActiveSessionId ? 'now' : '진행중',
+      durationTag: isRecentlyActive ? 'running' : 'paused',
       lastViewSec: annotationInfo?.lastViewSec || 0,
       quickPrompts: [
         '오늘 해야 할 일을 깔끔하게 정리해줘',
@@ -431,7 +434,7 @@ function getLiveAntigravitySessions() {
         })
         .filter((e) => e.mtimeMs > 0)
         .sort((a, b) => b.sortScore - a.sortScore)
-        .slice(0, 5);
+        .slice(0, 8);
 
       for (const entry of entries) {
         const parsed = parseTranscriptSession(entry.id);
