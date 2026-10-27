@@ -1,21 +1,69 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Outer Calm Sage Orbit Ring -->
+
+    <!-- 1. Lower Levitation Shadow Horizon Ring (Glassmorphic Emerald Depth) -->
     <path
+        android:pathData="M34,67 C34,62.5 42.95,59 54,59 C65.05,59 74,62.5 74,67 C74,71.5 65.05,75 54,75 C42.95,75 34,71.5 34,67 Z"
+        android:strokeWidth="2.2"
+        android:fillColor="#00000000">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="34"
+                android:startY="67"
+                android:endX="74"
+                android:endY="67"
+                android:type="linear">
+                <item android:color="#1868C5B2" android:offset="0.0" />
+                <item android:color="#9968C5B2" android:offset="0.5" />
+                <item android:color="#1868C5B2" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 2. Secondary Inner Levitation Wave -->
+    <path
+        android:pathData="M41,72.5 C45,74.3 63,74.3 67,72.5"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
         android:fillColor="#00000000"
-        android:pathData="M54,28A26,26 0 1,1 54,80A26,26 0 1,1 54,28Z"
-        android:strokeWidth="2.5"
-        android:strokeColor="#68C5B2" />
-    <!-- Antigravity Rising Delta / Crescent Mark -->
+        android:strokeColor="#4D68C5B2" />
+
+    <!-- 3. Left & Right Sculpted Antigravity Arch Wings (Continuous Curvature) -->
     <path
-        android:fillColor="#68C5B2"
-        android:pathData="M54,34L69,66L61.5,66L54,49.5L46.5,66L39,66Z" />
-    <!-- Warm Lamp Floating Core Dot -->
+        android:pathData="M54,28 C64.2,28 71.5,36.2 71.5,47.2 C71.5,54.8 67.4,60.6 62.2,63.2 C60.4,64.1 58.6,62.6 58.9,60.6 C59.4,57.4 61.8,53.2 61.8,47.8 C61.8,41.2 58.5,36.8 54,36.8 C49.5,36.8 46.2,41.2 46.2,47.8 C46.2,53.2 48.6,57.4 49.1,60.6 C49.4,62.6 47.6,64.1 45.8,63.2 C40.6,60.6 36.5,54.8 36.5,47.2 C36.5,36.2 43.8,28 54,28 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="54"
+                android:startY="28"
+                android:endX="54"
+                android:endY="64"
+                android:type="linear">
+                <item android:color="#FFFDF9" android:offset="0.0" />
+                <item android:color="#CBECE4" android:offset="0.45" />
+                <item android:color="#68C5B2" android:offset="0.82" />
+                <item android:color="#2E7D6E" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 4. Floating Zero-Gravity Core Sphere (Suspended inside the Arch) -->
     <path
-        android:fillColor="#E8B96D"
-        android:pathData="M54,57A4.2,4.2 0 1,1 54,65.4A4.2,4.2 0 1,1 54,57Z" />
+        android:pathData="M54,44.5 A6.2,6.2 0 1,1 54,56.9 A6.2,6.2 0 1,1 54,44.5 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="52.2"
+                android:centerY="48.5"
+                android:gradientRadius="8.5"
+                android:type="radial">
+                <item android:color="#FFFFFF" android:offset="0.0" />
+                <item android:color="#9BE2D3" android:offset="0.52" />
+                <item android:color="#4BA896" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>
