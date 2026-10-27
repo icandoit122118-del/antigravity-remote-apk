@@ -56,7 +56,7 @@ class AntigravityRemoteInstrumentedTest {
         // 3. Tap semi-transparent Model & Reasoning text inside the chat input box
         composeTestRule.onNodeWithContentDescription("모델 및 추론 선택").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithText("High").performClick()
+        composeTestRule.onNodeWithText("높음").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithContentDescription("모델 및 추론 선택").performClick()
         composeTestRule.waitForIdle()
