@@ -651,6 +651,8 @@ object PcBridgeClient {
 
     private data class BridgeChatReply(
         val reply: String,
+        val thoughtText: String = "",
+        val tools: List<ToolExecutionItem> = emptyList(),
         val syncState: LiveSyncState? = null
     )
 
@@ -669,10 +671,9 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port/api/chat")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
-                    connectTimeout = 800
-                    // Gemma 4 26B는 첫 로드나 긴 답변에서 수 초 이상 걸릴 수 있습니다.
-                    // 짧은 고정 타임아웃으로 가짜 폴백을 만들지 않고 실제 오류를 표시합니다.
-                    readTimeout = 30000
+                    connectTimeout = 900
+                    // LCODE CLI 및 Gemma 4 / Qwen 로컬 에이전트 도구 실행을 위해 넉넉한 타임아웃을 부여합니다.
+                    readTimeout = 55000
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 }
@@ -695,10 +696,37 @@ object PcBridgeClient {
                     ).use { it.readText() }
                     val json = JSONObject(responseText)
                     val reply = json.optString("reply").takeIf { it.isNotBlank() }
+                    val thoughtText = json.optString("thoughtText", "")
+                    val parsedTools = mutableListOf<ToolExecutionItem>()
+                    val tArr = json.optJSONArray("tools") ?: JSONArray()
+                    for (t in 0 until tArr.length()) {
+                        val tObj = tArr.optJSONObject(t) ?: continue
+                        val rawStatus = tObj.optString("status", "COMPLETED")
+                        val toolStatus = when {
+                            rawStatus.equals("RUNNING", ignoreCase = true) -> ToolRunStatus.RUNNING
+                            rawStatus.equals("FAILED", ignoreCase = true) -> ToolRunStatus.FAILED
+                            else -> ToolRunStatus.COMPLETED
+                        }
+                        parsedTools.add(
+                            ToolExecutionItem(
+                                id = tObj.optString("id", "bridge-tool-$t"),
+                                title = tObj.optString("title", "PC 원격 제어 실행"),
+                                commandOrPath = tObj.optString("commandOrPath", ""),
+                                outputPreview = tObj.optString("outputPreview", "완료"),
+                                durationMs = tObj.optLong("durationMs", 180L),
+                                status = toolStatus
+                            )
+                        )
+                    }
                     val syncState = if (json.has("sessions")) parseSyncStateFromJson(json) else null
                     if (reply != null) {
                         lastHealthyHost = candidate
-                        return@withContext BridgeChatReply(reply = reply, syncState = syncState)
+                        return@withContext BridgeChatReply(
+                            reply = reply,
+                            thoughtText = thoughtText,
+                            tools = parsedTools,
+                            syncState = syncState
+                        )
                     }
                 } else if (connection.responseCode in 400..599) {
                     // 브리지가 로컬 모델 오류를 명시적으로 반환한 경우에는
@@ -751,8 +779,10 @@ object PcBridgeClient {
             else -> "안그래비티 도우미"
         }
 
-        val plannedThought = buildThoughtForPrompt(userPrompt, isFromBridge, host, port, engineLabel, modelId, isLocalAi)
-        val plannedTool = buildToolForPrompt(userPrompt, messageId, isFromBridge, host, port, modelId, isLocalAi)
+        val plannedThought = bridgeOutcome?.thoughtText?.takeIf { it.isNotBlank() }
+            ?: buildThoughtForPrompt(userPrompt, isFromBridge, host, port, engineLabel, modelId, isLocalAi)
+        val plannedTools = bridgeOutcome?.tools?.takeIf { it.isNotEmpty() }
+            ?: listOf(buildToolForPrompt(userPrompt, messageId, isFromBridge, host, port, modelId, isLocalAi))
         val (plannedBody, codeLang, codeSnippet) = buildReplyForPrompt(userPrompt, liveReply, engineLabel, modelId, isLocalAi)
 
         var currentThought = ""
@@ -797,7 +827,7 @@ object PcBridgeClient {
         )
 
         // Phase 2: 추론 및 작업준비 확정 단계 -> "작업준비중"
-        val runningTool = plannedTool.copy(status = ToolRunStatus.RUNNING)
+        val runningTools = plannedTools.map { it.copy(status = ToolRunStatus.RUNNING) }
         val elapsedToolStart = ((System.currentTimeMillis() - startMs).coerceAtLeast(120L)) / 1000.0
         emit(
             StreamProgressFrame(
@@ -809,7 +839,7 @@ object PcBridgeClient {
                     timestamp = timestamp,
                     thoughtText = currentThought,
                     thoughtDurationSec = thoughtElapsedStr,
-                    tools = listOf(runningTool),
+                    tools = runningTools,
                     bodyText = "추론을 마치고 작업을 준비하고 있습니다...",
                     isStreaming = true,
                     tokenCount = tokenCounter,
@@ -822,7 +852,9 @@ object PcBridgeClient {
         )
         delay(220L)
 
-        val completedTool = plannedTool.copy(status = ToolRunStatus.COMPLETED)
+        val completedTools = plannedTools.map {
+            if (it.status == ToolRunStatus.RUNNING) it.copy(status = ToolRunStatus.COMPLETED) else it
+        }
 
         // Phase 3: 작업 마무리 단계 -> "작업 마무리중"
         val bodyChunks = chunkByWords(plannedBody, wordsPerChunk = 3)
@@ -841,7 +873,7 @@ object PcBridgeClient {
                         timestamp = timestamp,
                         thoughtText = currentThought,
                         thoughtDurationSec = thoughtElapsedStr,
-                        tools = listOf(completedTool),
+                        tools = completedTools,
                         bodyText = currentBody,
                         codeBlockLanguage = codeLang,
                         codeBlockContent = currentCode,
@@ -877,7 +909,7 @@ object PcBridgeClient {
                     timestamp = timestamp,
                     thoughtText = currentThought,
                     thoughtDurationSec = thoughtElapsedStr,
-                    tools = listOf(completedTool),
+                    tools = completedTools,
                     bodyText = currentBody,
                     codeBlockLanguage = codeLang,
                     codeBlockContent = currentCode,

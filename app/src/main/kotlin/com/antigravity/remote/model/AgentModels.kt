@@ -385,21 +385,31 @@ object AiEngineCatalog {
         ),
         AiEngineOption(
             id = "engine-local-gemma4",
-            label = "내 PC 로컬 AI (Gemma 4 26B A4B)",
+            label = "내 PC 로컬 AI (Gemma 4 26B A4B · LCODE)",
             shortName = "Gemma 4 26B A4B",
             modelId = "gemma4-26b-a4b-local",
-            providerTag = "내 PC · Ollama",
-            description = "현재 PC에 설치된 Gemma 4 로컬 모델을 사용합니다. 응답은 PC 브릿지를 통해 처리됩니다.",
+            providerTag = "내 PC · LCODE CLI",
+            description = "내 PC의 LCODE CLI 하네스(lcode.py)와 Gemma 4 로컬 모델을 통해 PC 제어 및 추론을 수행합니다.",
+            isLocal = true,
+            defaultPort = 8766
+        ),
+        AiEngineOption(
+            id = "engine-local-qwen3",
+            label = "내 PC 로컬 AI CLI (Qwen 3 4B · 초고속 제어)",
+            shortName = "LCODE Qwen 3 4B",
+            modelId = "qwen3:4b",
+            providerTag = "초고속 · PC 제어",
+            description = "LCODE CLI 기본 초경량 모델(68 tok/s)로 대화형 PC 제어와 빠른 응답에 최적화되어 있습니다.",
             isLocal = true,
             defaultPort = 8766
         ),
         AiEngineOption(
             id = "engine-local-qwen",
-            label = "내 PC 로컬 AI (Qwen 2.5)",
-            shortName = "Qwen 2.5",
+            label = "내 PC 로컬 AI CLI (Qwen 2.5 Coder 7B)",
+            shortName = "LCODE Qwen 2.5",
             modelId = "qwen2.5-coder:7b",
-            providerTag = "로컬 실행",
-            description = "외부 서버 전송 없이 내 PC 안에서 안전하게 답변과 코드를 생성합니다.",
+            providerTag = "로컬 코딩 · 제어",
+            description = "LCODE CLI 코딩·쉘 실행 하네스와 연동되어 내 PC 파일 편집 및 명령어를 수행합니다.",
             isLocal = true,
             defaultPort = 8766
         ),

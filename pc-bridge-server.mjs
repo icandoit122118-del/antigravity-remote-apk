@@ -601,15 +601,37 @@ let cachedAgentApiEnv = null;
 let cachedAgentApiEnvAtMs = 0;
 
 function resolveAntigravityAgentApiEnv(forceRefresh = false) {
+  const activeCid = currentActiveSessionId || FALLBACK_CONVERSATION_ID;
+  const sourceMetadata = process.env.ANTIGRAVITY_SOURCE_METADATA || JSON.stringify({
+    tool: {
+      conversationId: activeCid,
+      stepIndex: 1,
+      toolCall: {
+        id: `call_mobile_${Date.now()}`,
+        name: 'invoke_subagent',
+        argumentsJson: '{}'
+      }
+    }
+  });
+  const baseAgentEnv = {
+    ...process.env,
+    ANTIGRAVITY_AGENT: '1',
+    ANTIGRAVITY_APP_DATA_DIR: ANTIGRAVITY_ROOT.replace(/\\/g, '/'),
+    ANTIGRAVITY_CONVERSATION_ID: process.env.ANTIGRAVITY_CONVERSATION_ID || activeCid,
+    ANTIGRAVITY_PROJECT_ID: process.env.ANTIGRAVITY_PROJECT_ID || 'outside-of-project',
+    ANTIGRAVITY_LS_VERSION: process.env.ANTIGRAVITY_LS_VERSION || 'hub-2.26.0',
+    ANTIGRAVITY_SOURCE_METADATA: sourceMetadata
+  };
+
   if (!forceRefresh && cachedAgentApiEnv && (Date.now() - cachedAgentApiEnvAtMs < 60000)) {
-    return cachedAgentApiEnv;
+    return {
+      ...cachedAgentApiEnv,
+      ANTIGRAVITY_CONVERSATION_ID: activeCid,
+      ANTIGRAVITY_SOURCE_METADATA: sourceMetadata
+    };
   }
   if (!forceRefresh && process.env.ANTIGRAVITY_LS_ADDRESS && process.env.ANTIGRAVITY_CSRF_TOKEN) {
-    cachedAgentApiEnv = {
-      ...process.env,
-      ANTIGRAVITY_AGENT: '1',
-      ANTIGRAVITY_APP_DATA_DIR: ANTIGRAVITY_ROOT.replace(/\\/g, '/')
-    };
+    cachedAgentApiEnv = baseAgentEnv;
     cachedAgentApiEnvAtMs = Date.now();
     return cachedAgentApiEnv;
   }
@@ -626,16 +648,14 @@ function resolveAntigravityAgentApiEnv(forceRefresh = false) {
     ].join(' ');
     const out = execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript], {
       encoding: 'utf8',
-      timeout: 3000
+      timeout: 7500
     }).trim();
     const [tokenPart, portsPart] = out.split('|');
     const ports = String(portsPart || '').split(',').map((x) => Number(x.trim())).filter((n) => n > 0);
     const chosenPort = ports[0];
     if (chosenPort) {
       cachedAgentApiEnv = {
-        ...process.env,
-        ANTIGRAVITY_AGENT: '1',
-        ANTIGRAVITY_APP_DATA_DIR: ANTIGRAVITY_ROOT.replace(/\\/g, '/'),
+        ...baseAgentEnv,
         ANTIGRAVITY_LS_ADDRESS: `localhost:${chosenPort}`,
         ANTIGRAVITY_CSRF_TOKEN: tokenPart || process.env.ANTIGRAVITY_CSRF_TOKEN || ''
       };
@@ -646,11 +666,7 @@ function resolveAntigravityAgentApiEnv(forceRefresh = false) {
     // Fallback to current env
   }
 
-  cachedAgentApiEnv = {
-    ...process.env,
-    ANTIGRAVITY_AGENT: '1',
-    ANTIGRAVITY_APP_DATA_DIR: ANTIGRAVITY_ROOT.replace(/\\/g, '/')
-  };
+  cachedAgentApiEnv = baseAgentEnv;
   cachedAgentApiEnvAtMs = Date.now();
   return cachedAgentApiEnv;
 }
@@ -806,7 +822,12 @@ const mobileMessagesBySession = new Map();
 const mobileSessionMeta = new Map();
 const pinnedSessionIds = new Set();
 const archivedSessionIds = new Set();
-const deletedSessionIds = new Set(['9718dcf9-efbd-4ef2-b9b6-ca58a4676720']);
+const deletedSessionIds = new Set([
+  '9718dcf9-efbd-4ef2-b9b6-ca58a4676720',
+  'af5a00f8-1384-4960-8178-4be4d1da8d04',
+  '3203690b-dd37-403e-9d5c-e71d45ee2879',
+  '7f54658c-c1cd-4e35-bfc4-070538f61a60'
+]);
 const pinnedProjectNames = new Set();
 const archivedProjectNames = new Set();
 const deletedProjectNames = new Set();
@@ -1313,9 +1334,12 @@ function parseTranscriptSession(convId, summaryRow = null) {
       lastViewSec: annotationInfo?.lastViewSec || 0,
       lastActivityMs: lastMsgMs,
       quickPrompts: [
-        '현재 PC 작업 현황 요약해줘',
-        'PC 상태와 프로젝트 폴더 목록 보여줘',
-        '방금 작업한 내용 실측 테스트 실행해줘'
+        'PC 상태와 GPU·메모리 확인해줘',
+        '지금 PC 화면 캡처해줘',
+        '실행 중인 프로그램과 창 목록 보여줘',
+        '메모장 켜서 오늘 할 일 정리 적어줘',
+        '볼륨 5칸 올려줘',
+        '로컬ai 현재 폴더 파일 목록 분석해줘'
       ],
       messages: recentMessages
     };
@@ -1564,7 +1588,115 @@ function executePcRemoteCommand(command, args = {}) {
   };
 }
 
-async function tryLocalOllama(modelId, prompt) {
+const LCODE_CLI_PATH = path.join(SCRATCH_DIR, 'local-ai-vibe', 'lcode.py');
+const OLLAMA_EXE_PATH = path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe');
+
+async function ensureOllamaServerRunning() {
+  try {
+    const res = await fetch('http://127.0.0.1:11434/api/tags', {
+      method: 'GET',
+      signal: AbortSignal.timeout(1200)
+    });
+    if (res.ok) return true;
+  } catch {
+    // Not running yet
+  }
+  try {
+    if (fs.existsSync(OLLAMA_EXE_PATH)) {
+      const child = spawn(OLLAMA_EXE_PATH, ['serve'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
+      });
+      child.unref();
+      await new Promise((r) => setTimeout(r, 1800));
+      return true;
+    }
+  } catch {
+    // Ignore spawn error
+  }
+  return false;
+}
+
+function runLcodeCliHarness(modelId, prompt, cwdPath) {
+  return new Promise((resolve) => {
+    if (!fs.existsSync(LCODE_CLI_PATH)) {
+      resolve(null);
+      return;
+    }
+    const targetCwd = cwdPath && fs.existsSync(cwdPath) ? cwdPath : path.join(SCRATCH_DIR, currentActiveProjectName);
+    const rawModel = String(modelId || '').trim();
+    const effectiveModel = (!rawModel || rawModel.includes('antigravity') || rawModel.includes('gemini-4') || rawModel.includes('gemini-3') || rawModel.includes('claude') || rawModel.includes('gpt-oss'))
+      ? 'game'
+      : rawModel;
+
+    const args = [
+      LCODE_CLI_PATH,
+      '-m', effectiveModel,
+      '-w', currentActiveProjectName || 'default',
+      '--cwd', targetCwd,
+      '--json',
+      prompt
+    ];
+
+    const proc = spawn('python', args, {
+      cwd: targetCwd,
+      windowsHide: true,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    });
+
+    let stdoutStr = '';
+    let stderrStr = '';
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch {}
+      resolve(null);
+    }, Math.max(LOCAL_AI_TIMEOUT_MS, 45000));
+
+    proc.stdout.on('data', (chunk) => { stdoutStr += chunk.toString('utf8'); });
+    proc.stderr.on('data', (chunk) => { stderrStr += chunk.toString('utf8'); });
+    proc.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    proc.on('close', () => {
+      clearTimeout(timer);
+      const trimmed = stdoutStr.trim();
+      if (!trimmed) {
+        resolve(null);
+        return;
+      }
+      try {
+        const lines = trimmed.split(/\r?\n/);
+        const lastJsonLine = [...lines].reverse().find((l) => l.trim().startsWith('{') && l.trim().endsWith('}')) || trimmed;
+        const parsed = JSON.parse(lastJsonLine);
+        if (parsed && parsed.ok && parsed.reply) {
+          resolve({
+            ok: true,
+            source: 'lcode-cli',
+            model: parsed.model || effectiveModel,
+            speed: parsed.speed || 0,
+            elapsedSec: parsed.elapsedSec || 0,
+            tools: Array.isArray(parsed.tools) ? parsed.tools : [],
+            reply: `${parsed.reply}\n\n[⚡ Local AI CLI (lcode.py · ${parsed.model || effectiveModel}) | ${parsed.speed || 0} tok/s]`
+          });
+          return;
+        }
+      } catch {
+        // Fallback if raw text was printed
+      }
+      resolve({
+        ok: true,
+        source: 'lcode-cli',
+        model: effectiveModel,
+        speed: 0,
+        tools: [],
+        reply: trimmed
+      });
+    });
+  });
+}
+
+async function tryLocalOllama(modelId, prompt, cwdPath = '') {
   if (localAiInFlight) {
     return {
       ok: false,
@@ -1575,46 +1707,58 @@ async function tryLocalOllama(modelId, prompt) {
 
   localAiInFlight = true;
   const requestedModel = String(modelId || '').trim() || DEFAULT_OLLAMA_MODEL;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LOCAL_AI_TIMEOUT_MS);
 
   try {
-    // Ollama의 generate 대신 chat API를 사용합니다. Gemma 4가 사고 토큰을
-    // 별도 필드로 처리하도록 하며, 화면에는 최종 답변만 전달합니다.
-    const res = await fetch('http://127.0.0.1:11434/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: requestedModel,
-        messages: [{ role: 'user', content: prompt }],
-        think: false,
-        stream: false,
-        keep_alive: '5m',
-        options: {
-          temperature: 0.2,
-          num_predict: 512
-        }
-      }),
-      signal: controller.signal
-    });
+    await ensureOllamaServerRunning();
 
-    const data = await res.json().catch(() => ({}));
-    const content = String(data?.message?.content || '').trim();
-    if (res.ok && content) {
-      return {
-        ok: true,
-        source: 'ollama',
-        model: String(data.model || requestedModel),
-        reply: `[PC 로컬 Ollama (${String(data.model || requestedModel)}) 응답]\n${content}`
-      };
+    // 1. Primary: Run through lcode.py CLI Agent Harness (preserves CLI + 38 skills + RAG + pc_control/run_shell tools)
+    const lcodeResult = await runLcodeCliHarness(requestedModel, prompt, cwdPath);
+    if (lcodeResult && lcodeResult.ok && lcodeResult.reply) {
+      return lcodeResult;
     }
 
-    const detail = String(data?.error || `Ollama HTTP ${res.status}`).trim();
-    return {
-      ok: false,
-      errorCode: res.status === 404 ? 'OLLAMA_MODEL_NOT_FOUND' : 'OLLAMA_REQUEST_FAILED',
-      error: `Ollama 로컬 모델(${requestedModel}) 응답 실패: ${detail}`
-    };
+    // 2. Fallback: Direct Ollama /api/chat
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), LOCAL_AI_TIMEOUT_MS);
+    try {
+      const res = await fetch('http://127.0.0.1:11434/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: requestedModel,
+          messages: [{ role: 'user', content: prompt }],
+          think: false,
+          stream: false,
+          keep_alive: '5m',
+          options: {
+            temperature: 0.2,
+            num_predict: 512
+          }
+        }),
+        signal: controller.signal
+      });
+
+      const data = await res.json().catch(() => ({}));
+      const content = String(data?.message?.content || '').trim();
+      if (res.ok && content) {
+        return {
+          ok: true,
+          source: 'ollama',
+          model: String(data.model || requestedModel),
+          tools: [],
+          reply: `[PC 로컬 Ollama (${String(data.model || requestedModel)}) 응답]\n${content}`
+        };
+      }
+
+      const detail = String(data?.error || `Ollama HTTP ${res.status}`).trim();
+      return {
+        ok: false,
+        errorCode: res.status === 404 ? 'OLLAMA_MODEL_NOT_FOUND' : 'OLLAMA_REQUEST_FAILED',
+        error: `Ollama 로컬 모델(${requestedModel}) 응답 실패: ${detail}`
+      };
+    } finally {
+      clearTimeout(timer);
+    }
   } catch (error) {
     const message = error?.name === 'AbortError'
       ? `Ollama 응답이 ${LOCAL_AI_TIMEOUT_MS}ms 안에 완료되지 않았습니다.`
@@ -1625,9 +1769,490 @@ async function tryLocalOllama(modelId, prompt) {
       error: message
     };
   } finally {
-    clearTimeout(timer);
     localAiInFlight = false;
   }
+}
+
+function runPowerShellQuick(psCommand, cwdPath = SCRATCH_DIR, timeoutMs = 15000) {
+  try {
+    const out = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ${psCommand}`],
+      {
+        cwd: fs.existsSync(cwdPath) ? cwdPath : SCRATCH_DIR,
+        encoding: 'utf8',
+        timeout: timeoutMs,
+        windowsHide: true
+      }
+    );
+    return { ok: true, output: String(out || '').trim() };
+  } catch (err) {
+    const stdout = err?.stdout ? String(err.stdout) : '';
+    const stderr = err?.stderr ? String(err.stderr) : '';
+    const combined = `${stdout}\n${stderr}`.trim() || String(err?.message || err);
+    return { ok: false, output: combined.slice(0, 2000) };
+  }
+}
+
+function executeConversationalPcControl(rawPrompt) {
+  const prompt = String(rawPrompt || '').trim();
+  const cleanPrompt = prompt.replace(/\s*\(선택 방향:[^)]*\)\s*$/, '').trim();
+  const lower = cleanPrompt.toLowerCase();
+  const projectDir = path.join(SCRATCH_DIR, currentActiveProjectName);
+  const startMs = Date.now();
+  const makeTool = (title, commandOrPath, outputPreview, status = 'COMPLETED') => ({
+    id: `pc-ctrl-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    title,
+    commandOrPath,
+    outputPreview: String(outputPreview || '완료').slice(0, 600),
+    durationMs: Math.max(45, Date.now() - startMs),
+    status
+  });
+
+  // 0. Explicit Local AI CLI (lcode.py) prefix in chat ("로컬ai ...", "lcode ...")
+  const lcodePrefix = cleanPrompt.match(/^(?:로컬\s*ai|lcode|엘코드)\s*[:：]?\s*(.+)$/is);
+  if (lcodePrefix && lcodePrefix[1]) {
+    return {
+      handled: false,
+      forceLocalAiCli: true,
+      effectivePrompt: lcodePrefix[1].trim()
+    };
+  }
+
+  // 1. Explicit Shell / PowerShell / CMD execution ("명령어: ...", "실행: ...", "파워쉘: ...", "cmd: ...")
+  const shellPrefix = cleanPrompt.match(/^(?:명령어|실행|터미널|파워쉘|powershell|cmd|ps)\s*[:：]\s*(.+)$/is)
+    || cleanPrompt.match(/^`([^`]+)`\s*(?:실행|쳐줘|돌려줘)/i);
+  if (shellPrefix && shellPrefix[1]) {
+    const cmd = shellPrefix[1].trim();
+    const res = runPowerShellQuick(cmd, projectDir, 25000);
+    const outText = res.output || '(출력 없음 · 정상 완료)';
+    return {
+      handled: true,
+      thoughtText: `모바일 대화창에서 요청한 PC 셸 명령(${cmd})을 즉시 실행했습니다.`,
+      tools: [makeTool('PC PowerShell 명령 실행', cmd, outText, res.ok ? 'COMPLETED' : 'FAILED')],
+      reply: [
+        `**한 줄 결론**: PC에서 \`${cmd}\` 명령을 즉시 실행했습니다.`,
+        '',
+        '```text',
+        outText.slice(0, 1800),
+        '```'
+      ].join('\n')
+    };
+  }
+
+  // 2. Project folder creation
+  const folderMatch = cleanPrompt.match(/(?:폴더|프로젝트)\s*(?:생성|만들|추가)[해줘어:\s]*([a-zA-Z0-9_-]+)/i)
+    || cleanPrompt.match(/([a-zA-Z0-9_-]+)\s*(?:폴더|프로젝트)\s*(?:생성|만들)/i);
+  if (folderMatch && folderMatch[1] && !['목록', '현재', '내', 'pc'].includes(folderMatch[1].toLowerCase())) {
+    const created = createPcProjectFolder(folderMatch[1], `모바일 채팅 명령("${cleanPrompt}")으로 생성됨`);
+    const reply = `PC에 새 프로젝트 폴더를 즉시 생성했습니다.\n• 폴더명: **${created.folderName}**\n• 경로: [${created.folderName}](file:///${created.path})`;
+    return {
+      handled: true,
+      thoughtText: `PC 작업 공간에 새 프로젝트 폴더(${created.folderName})를 생성했습니다.`,
+      tools: [makeTool('PC 프로젝트 폴더 생성', created.path, reply)],
+      reply
+    };
+  }
+
+  // 3. Volume & Media Control ("볼륨 올려줘", "볼륨 내려줘", "음소거", "재생/일시정지", "다음 곡")
+  if (/(?:볼륨|소리|음량|음소거|뮤트|volume|mute)/i.test(cleanPrompt) && /(?:올려|키워|높여|내려|줄여|낮춰|꺼|켜|뮤트|음소거|up|down|mute|\d+)/i.test(cleanPrompt)) {
+    const numMatch = cleanPrompt.match(/(\d+)/);
+    const rawNum = numMatch ? Number(numMatch[1]) : 5;
+    const steps = Math.max(1, Math.min(25, rawNum > 25 ? Math.round(rawNum / 2) : rawNum));
+    const isMute = /(?:음소거|뮤트|mute|소리\s*꺼)/i.test(cleanPrompt);
+    const isDown = /(?:내려|줄여|낮춰|감소|작게|down)/i.test(cleanPrompt);
+    const keyChar = isMute ? 173 : (isDown ? 174 : 175);
+    const actionLabel = isMute ? '음소거 토글' : (isDown ? `볼륨 ${steps}단계 감소` : `볼륨 ${steps}단계 증가`);
+    const loopCount = isMute ? 1 : steps;
+    const ps = `$w = New-Object -ComObject WScript.Shell; 1..${loopCount} | ForEach-Object { $w.SendKeys([char]${keyChar}); Start-Sleep -Milliseconds 25 }`;
+    runPowerShellQuick(ps, projectDir, 6000);
+    const reply = `PC 시스템 오디오 **${actionLabel}** 제어를 완료했습니다.`;
+    return {
+      handled: true,
+      thoughtText: `PC 오디오 볼륨(${actionLabel}) 키 이벤트를 즉시 전송했습니다.`,
+      tools: [makeTool(`PC 오디오 제어 (${actionLabel})`, `VK_VOLUME (${keyChar}) x ${loopCount}`, reply)],
+      reply
+    };
+  }
+
+  if (/(?:노래|음악|미디어|영상)\s*(?:재생|일시정지|멈춰|정지|다음\s*곡|이전\s*곡)/i.test(cleanPrompt)) {
+    const isNext = /다음/i.test(cleanPrompt);
+    const isPrev = /이전/i.test(cleanPrompt);
+    const keyChar = isNext ? 176 : (isPrev ? 177 : 179);
+    const label = isNext ? '다음 트랙' : (isPrev ? '이전 트랙' : '재생/일시정지');
+    runPowerShellQuick(`(New-Object -ComObject WScript.Shell).SendKeys([char]${keyChar})`, projectDir, 5000);
+    const reply = `PC 미디어 **${label}** 제어를 실행했습니다.`;
+    return {
+      handled: true,
+      thoughtText: `PC 미디어 컨트롤 키(${label})를 전송했습니다.`,
+      tools: [makeTool(`PC 미디어 제어 (${label})`, `VK_MEDIA (${keyChar})`, reply)],
+      reply
+    };
+  }
+
+  // 4. Notepad launch + optional text input ("메모장 켜서 안녕 입력해줘" / "메모장 열어줘")
+  if (/(?:메모장|notepad)/i.test(cleanPrompt) && /(?:열어|켜|실행|띄워|적어|입력|써)/i.test(cleanPrompt)) {
+    const textMatch = cleanPrompt.match(/(?:메모장|notepad)\s*(?:열어서|켜서|열고|켜고|에|에다|에다가)\s*['"]?(.+?)['"]?\s*(?:이라고|라고)?\s*(?:입력|적어|써|타이핑)/i);
+    const textToType = textMatch && textMatch[1] ? textMatch[1].trim() : '';
+    if (textToType) {
+      const escaped = textToType.replace(/'/g, "''");
+      const ps = [
+        `Start-Process notepad.exe;`,
+        `Start-Sleep -Milliseconds 650;`,
+        `Set-Clipboard -Value '${escaped}';`,
+        `$w = New-Object -ComObject WScript.Shell;`,
+        `$null = $w.AppActivate('메모장');`,
+        `$null = $w.AppActivate('Notepad');`,
+        `Start-Sleep -Milliseconds 180;`,
+        `$w.SendKeys('^v')`
+      ].join(' ');
+      runPowerShellQuick(ps, projectDir, 8000);
+      const reply = `PC에서 **메모장**을 실행하고 요청하신 내용을 바로 입력했습니다.\n• 입력 내용: \`${textToType}\``;
+      return {
+        handled: true,
+        thoughtText: `PC 메모장(notepad.exe)을 실행한 뒤 클립보드 동기화로 텍스트를 입력했습니다.`,
+        tools: [makeTool('PC 메모장 실행 및 텍스트 입력', `notepad.exe <- "${textToType}"`, reply)],
+        reply
+      };
+    } else {
+      runPowerShellQuick('Start-Process notepad.exe', projectDir, 5000);
+      const reply = 'PC에서 **메모장(notepad.exe)**을 실행했습니다.';
+      return {
+        handled: true,
+        thoughtText: 'PC에서 메모장(notepad.exe) 프로세스를 시작했습니다.',
+        tools: [makeTool('PC 앱 실행 (메모장)', 'Start-Process notepad.exe', reply)],
+        reply
+      };
+    }
+  }
+
+  // 5. Website / Search / App Launching & Closing
+  const searchMatch = cleanPrompt.match(/(?:유튜브|youtube|구글|google|네이버|naver)에서\s+['"]?(.+?)['"]?\s*(?:검색|찾아|틀어|열어)/i);
+  if (searchMatch && searchMatch[1]) {
+    const q = encodeURIComponent(searchMatch[1].trim());
+    const isYt = /(?:유튜브|youtube)/i.test(cleanPrompt);
+    const isNaver = /(?:네이버|naver)/i.test(cleanPrompt);
+    const url = isYt
+      ? `https://www.youtube.com/results?search_query=${q}`
+      : isNaver
+        ? `https://search.naver.com/search.naver?query=${q}`
+        : `https://www.google.com/search?q=${q}`;
+    const siteName = isYt ? 'YouTube' : (isNaver ? '네이버' : 'Google');
+    runPowerShellQuick(`Start-Process '${url}'`, projectDir, 5000);
+    const reply = `PC 브라우저에서 **${siteName}** 검색 화면(\`${searchMatch[1].trim()}\`)을 열었습니다.\n• URL: ${url}`;
+    return {
+      handled: true,
+      thoughtText: `PC 기본 브라우저로 ${siteName} 검색 URL을 실행했습니다.`,
+      tools: [makeTool(`PC 브라우저 ${siteName} 검색 열기`, url, reply)],
+      reply
+    };
+  }
+
+  const urlMatch = cleanPrompt.match(/(https?:\/\/[^\s]+|(?:www\.)?[a-zA-Z0-9-]+\.(?:com|net|org|kr|io|dev|ai)(?:\/[^\s]*)?)/i);
+  if (urlMatch && urlMatch[1] && /(?:열어|접속|켜|가줘|이동|띄워|실행)/i.test(cleanPrompt)) {
+    const rawUrl = urlMatch[1];
+    const url = rawUrl.startsWith('http') ? rawUrl : `https://${rawUrl}`;
+    runPowerShellQuick(`Start-Process '${url}'`, projectDir, 5000);
+    const reply = `PC 브라우저에서 요청하신 사이트를 열었습니다.\n• URL: ${url}`;
+    return {
+      handled: true,
+      thoughtText: `PC 브라우저에서 ${url} 주소를 열었습니다.`,
+      tools: [makeTool('PC 브라우저 URL 열기', url, reply)],
+      reply
+    };
+  }
+
+  if (/(?:열어|켜|실행|띄워|틀어)/i.test(cleanPrompt)) {
+    const appTargets = [
+      { rx: /(?:유튜브|youtube)/i, label: 'YouTube', cmd: "Start-Process 'https://www.youtube.com'" },
+      { rx: /(?:네이버|naver)/i, label: '네이버', cmd: "Start-Process 'https://www.naver.com'" },
+      { rx: /(?:구글|google)/i, label: 'Google', cmd: "Start-Process 'https://www.google.com'" },
+      { rx: /(?:깃허브|github)/i, label: 'GitHub 저장소', cmd: "Start-Process 'https://github.com/icandoit122118-del/antigravity-remote-apk'" },
+      { rx: /(?:크롬|chrome|브라우저)/i, label: '크롬 브라우저', cmd: "try { Start-Process chrome.exe -ErrorAction Stop } catch { Start-Process msedge.exe }" },
+      { rx: /(?:계산기|calc)/i, label: '계산기', cmd: 'Start-Process calc.exe' },
+      { rx: /(?:탐색기|파일\s*탐색기|폴더\s*창|작업\s*폴더)/i, label: '파일 탐색기', cmd: `Start-Process explorer.exe '${projectDir}'` },
+      { rx: /(?:작업\s*관리자|taskmgr)/i, label: '작업 관리자', cmd: 'Start-Process taskmgr.exe' },
+      { rx: /(?:윈도우\s*설정|시스템\s*설정|설정\s*창)/i, label: 'Windows 설정', cmd: "Start-Process 'ms-settings:'" },
+      { rx: /(?:터미널|파워쉘|명령\s*프롬프트|cmd)/i, label: 'Windows 터미널', cmd: 'try { Start-Process wt.exe -ErrorAction Stop } catch { Start-Process powershell.exe }' },
+      { rx: /(?:vscode|vs\s*code|비주얼\s*스튜디오\s*코드)/i, label: 'VS Code', cmd: `Start-Process code '${projectDir}'` },
+      { rx: /(?:그림판|mspaint)/i, label: '그림판', cmd: 'Start-Process mspaint.exe' }
+    ];
+    for (const item of appTargets) {
+      if (item.rx.test(cleanPrompt)) {
+        runPowerShellQuick(item.cmd, projectDir, 6000);
+        const reply = `PC에서 **${item.label}**을(를) 즉시 실행했습니다.`;
+        return {
+          handled: true,
+          thoughtText: `PC에서 ${item.label} 실행 명령(${item.cmd})을 수행했습니다.`,
+          tools: [makeTool(`PC 앱/사이트 실행 (${item.label})`, item.cmd, reply)],
+          reply
+        };
+      }
+    }
+  }
+
+  // Closing apps ("메모장 꺼줘", "계산기 종료해줘", "크롬 닫아줘")
+  if (/(?:꺼줘|꺼|종료해|종료|닫아줘|강제\s*종료)/i.test(cleanPrompt) && !/(?:컴퓨터|pc\s*전원|시스템\s*종료)/i.test(cleanPrompt)) {
+    const closeTargets = [
+      { rx: /(?:메모장|notepad)/i, label: '메모장', proc: 'notepad' },
+      { rx: /(?:계산기|calc)/i, label: '계산기', proc: 'CalculatorApp,calc' },
+      { rx: /(?:그림판|mspaint)/i, label: '그림판', proc: 'mspaint' },
+      { rx: /(?:크롬|chrome)/i, label: 'Chrome', proc: 'chrome' }
+    ];
+    for (const item of closeTargets) {
+      if (item.rx.test(cleanPrompt)) {
+        const names = item.proc.split(',').map((s) => `'${s.trim()}'`).join(',');
+        const cmd = `Stop-Process -Name ${names} -Force -ErrorAction SilentlyContinue`;
+        runPowerShellQuick(cmd, projectDir, 6000);
+        const reply = `PC에서 실행 중인 **${item.label}** 프로그램을 종료했습니다.`;
+        return {
+          handled: true,
+          thoughtText: `PC 프로세스(${item.proc}) 종료 명령을 실행했습니다.`,
+          tools: [makeTool(`PC 앱 종료 (${item.label})`, cmd, reply)],
+          reply
+        };
+      }
+    }
+  }
+
+  // 6. Window & Desktop Management ("바탕화면 보여줘", "모든 창 최소화", "창 복구", "알트탭", "현재 창 닫아줘")
+  if (/(?:바탕\s*화면|모든\s*창\s*최소화|창\s*다\s*내려|데스크톱\s*보여)/i.test(cleanPrompt)) {
+    const cmd = '(New-Object -ComObject Shell.Application).ToggleDesktop()';
+    runPowerShellQuick(cmd, projectDir, 5000);
+    const reply = 'PC의 모든 창을 토글하여 **바탕화면**을 표시했습니다.';
+    return {
+      handled: true,
+      thoughtText: 'Shell.Application ToggleDesktop()으로 PC 바탕화면 보기를 실행했습니다.',
+      tools: [makeTool('PC 바탕화면 표시 (ToggleDesktop)', cmd, reply)],
+      reply
+    };
+  }
+
+  if (/(?:창\s*모두\s*복구|최소화\s*취소|창\s*다시\s*띄워|창\s*복원)/i.test(cleanPrompt)) {
+    const cmd = '(New-Object -ComObject Shell.Application).UndoMinimizeALL()';
+    runPowerShellQuick(cmd, projectDir, 5000);
+    const reply = '최소화되어 있던 PC 창들을 모두 원래대로 복구했습니다.';
+    return {
+      handled: true,
+      thoughtText: 'Shell.Application UndoMinimizeALL()로 PC 창들을 복원했습니다.',
+      tools: [makeTool('PC 전체 창 복구', cmd, reply)],
+      reply
+    };
+  }
+
+  if (/(?:알트\s*탭|alt\s*\+?\s*tab|창\s*전환|다음\s*창)/i.test(cleanPrompt)) {
+    sendSunshineInputPacket({ type: 'KEY', keySpec: '%{TAB}' });
+    const reply = 'PC에서 **창 전환(Alt+Tab)** 키를 실행했습니다.';
+    return {
+      handled: true,
+      thoughtText: 'SunshineHostDaemon을 통해 Alt+Tab 키 입력을 전송했습니다.',
+      tools: [makeTool('PC 창 전환 (Alt+Tab)', 'KEY %{TAB}', reply)],
+      reply
+    };
+  }
+
+  if (/(?:현재\s*창\s*닫아|활성\s*창\s*닫아|alt\s*\+?\s*f4)/i.test(cleanPrompt)) {
+    sendSunshineInputPacket({ type: 'KEY', keySpec: '%{F4}' });
+    const reply = 'PC의 현재 활성 창에 **닫기(Alt+F4)** 입력을 전송했습니다.';
+    return {
+      handled: true,
+      thoughtText: 'SunshineHostDaemon을 통해 Alt+F4 키 입력을 전송했습니다.',
+      tools: [makeTool('PC 활성 창 닫기 (Alt+F4)', 'KEY %{F4}', reply)],
+      reply
+    };
+  }
+
+  // 7. Mouse & Keyboard Control via SunshineHostDaemon / Clipboard
+  if (/(?:마우스|커서|클릭|우클릭|더블\s*클릭|스크롤)/i.test(cleanPrompt) && /(?:해줘|해|이동|클릭|올려|내려|움직여)/i.test(cleanPrompt)) {
+    const coordMatch = cleanPrompt.match(/(\d{2,4})\s*[,xX\s]\s*(\d{2,4})/);
+    const targetX = coordMatch ? Number(coordMatch[1]) : (/(?:가운데|중앙|센터)/i.test(cleanPrompt) ? Math.round(sunshineScreenWidth / 2) : sunshineCursorX);
+    const targetY = coordMatch ? Number(coordMatch[2]) : (/(?:가운데|중앙|센터)/i.test(cleanPrompt) ? Math.round(sunshineScreenHeight / 2) : sunshineCursorY);
+
+    if (/(?:스크롤)/i.test(cleanPrompt)) {
+      const isUp = /(?:위|올려|up)/i.test(cleanPrompt);
+      const delta = isUp ? 360 : -360;
+      const pkt = sendSunshineInputPacket({ type: 'SCROLL', scrollDelta: delta });
+      const reply = `PC 마우스 휠을 **${isUp ? '위로' : '아래로'} 스크롤**했습니다 (현재 커서: ${pkt.hostX}, ${pkt.hostY}).`;
+      return {
+        handled: true,
+        thoughtText: `SunshineHostDaemon으로 마우스 스크롤(${delta}) 패킷을 전송했습니다.`,
+        tools: [makeTool('PC 마우스 스크롤 제어', `SCROLL ${delta}`, reply)],
+        reply
+      };
+    }
+
+    const isRight = /(?:우클릭|오른쪽\s*클릭)/i.test(cleanPrompt);
+    const isDouble = /(?:더블\s*클릭|두\s*번\s*클릭)/i.test(cleanPrompt);
+    const isMoveOnly = /(?:이동|움직여)/i.test(cleanPrompt) && !/(?:클릭)/i.test(cleanPrompt);
+    const packetType = isMoveOnly ? 'ABS_POS' : (isDouble ? 'DOUBLE_TAP' : (isRight ? 'LONG_PRESS_RIGHT' : 'TOUCH_TAP'));
+    const pkt = sendSunshineInputPacket({
+      type: packetType,
+      button: isRight ? 'RIGHT' : (isDouble ? 'DOUBLE' : 'LEFT'),
+      x: targetX,
+      y: targetY,
+      refWidth: sunshineScreenWidth,
+      refHeight: sunshineScreenHeight
+    });
+    const actionDesc = isMoveOnly ? '커서 이동' : (isDouble ? '더블클릭' : (isRight ? '우클릭' : '좌클릭'));
+    const reply = `PC 화면 **(${pkt.hostX}, ${pkt.hostY})** 위치에 **마우스 ${actionDesc}**을 실행했습니다.`;
+    return {
+      handled: true,
+      thoughtText: `SunshineHostDaemon으로 마우스 ${actionDesc} 패킷(${pkt.hostX}, ${pkt.hostY})을 전송했습니다.`,
+      tools: [makeTool(`PC 마우스 ${actionDesc}`, `${packetType} (${pkt.hostX}, ${pkt.hostY})`, reply)],
+      reply
+    };
+  }
+
+  // Keyboard typing ("'안녕하세요' 입력해줘/타이핑해줘/쳐줘")
+  const typeMatch = cleanPrompt.match(/['"]([^'"]+)['"]\s*(?:이라고|라고)?\s*(?:타이핑|입력|쳐줘|쳐|적어|써줘)/i)
+    || cleanPrompt.match(/(?:키보드로|화면에|창에)\s+['"]?(.+?)['"]?\s*(?:이라고|라고)?\s*(?:타이핑|입력|쳐줘|쳐)/i);
+  if (typeMatch && typeMatch[1]) {
+    const textToType = typeMatch[1].trim();
+    const escaped = textToType.replace(/'/g, "''");
+    const ps = `Set-Clipboard -Value '${escaped}'; Start-Sleep -Milliseconds 80; (New-Object -ComObject WScript.Shell).SendKeys('^v')`;
+    runPowerShellQuick(ps, projectDir, 5000);
+    const reply = `PC 현재 활성 창에 텍스트를 입력했습니다.\n• 입력 텍스트: \`${textToType}\``;
+    return {
+      handled: true,
+      thoughtText: `클립보드 동기화 및 Ctrl+V 전송으로 PC 활성 창에 유니코드 텍스트를 입력했습니다.`,
+      tools: [makeTool('PC 키보드 텍스트 입력', `SendKeys('^v') <- "${textToType}"`, reply)],
+      reply
+    };
+  }
+
+  // Keyboard special keys ("엔터 쳐줘", "ESC 눌러줘", "복사 눌러줘", "붙여넣기 눌러줘", "저장 눌러줘")
+  if (/(?:엔터|enter|esc|이스케이프|스페이스\s*바|백스페이스|ctrl\s*\+?\s*[acvzs]|복사\s*키|붙여넣기\s*키|전체\s*선택|실행\s*취소)\s*(?:쳐줘|눌러줘|눌러|입력해줘|전송해줘)/i.test(cleanPrompt)) {
+    let keySpec = '{ENTER}';
+    let keyLabel = 'Enter';
+    if (/esc|이스케이프/i.test(cleanPrompt)) { keySpec = '{ESC}'; keyLabel = 'ESC'; }
+    else if (/스페이스/i.test(cleanPrompt)) { keySpec = ' '; keyLabel = 'Space'; }
+    else if (/백스페이스/i.test(cleanPrompt)) { keySpec = '{BACKSPACE}'; keyLabel = 'Backspace'; }
+    else if (/ctrl\s*\+?\s*c|복사/i.test(cleanPrompt)) { keySpec = '^c'; keyLabel = 'Ctrl+C'; }
+    else if (/ctrl\s*\+?\s*v|붙여넣기/i.test(cleanPrompt)) { keySpec = '^v'; keyLabel = 'Ctrl+V'; }
+    else if (/ctrl\s*\+?\s*a|전체\s*선택/i.test(cleanPrompt)) { keySpec = '^a'; keyLabel = 'Ctrl+A'; }
+    else if (/ctrl\s*\+?\s*z|실행\s*취소/i.test(cleanPrompt)) { keySpec = '^z'; keyLabel = 'Ctrl+Z'; }
+    else if (/ctrl\s*\+?\s*s|저장/i.test(cleanPrompt)) { keySpec = '^s'; keyLabel = 'Ctrl+S'; }
+
+    sendSunshineInputPacket({ type: 'KEY', keySpec });
+    const reply = `PC에 **${keyLabel} (\`${keySpec}\`)** 키 입력을 즉시 전송했습니다.`;
+    return {
+      handled: true,
+      thoughtText: `SunshineHostDaemon을 통해 ${keyLabel}(${keySpec}) 키 입력을 전송했습니다.`,
+      tools: [makeTool(`PC 키보드 단축키 전송 (${keyLabel})`, `KEY ${keySpec}`, reply)],
+      reply
+    };
+  }
+
+  // 8. Screen Capture / Screenshot ("화면 캡처해줘", "스크린샷 찍어줘", "지금 PC 화면 보여줘")
+  if (/(?:화면\s*캡처|스크린샷|화면\s*찍어|캡처해줘|캡쳐해줘)/i.test(cleanPrompt)) {
+    ensureSunshineHostDaemonStarted();
+    const attachDir = path.join(projectDir, 'attachments');
+    fs.mkdirSync(attachDir, { recursive: true });
+    const fileName = `pc_screen_${Date.now()}.jpg`;
+    const savePath = path.join(attachDir, fileName);
+    if (sunshineLatestFrameJpeg) {
+      fs.writeFileSync(savePath, sunshineLatestFrameJpeg);
+    }
+    const winRes = runPowerShellQuick(
+      `Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | Select-Object -First 4 -ExpandProperty MainWindowTitle`,
+      projectDir,
+      4000
+    );
+    const openWins = (winRes.output || '').split(/\r?\n/).filter(Boolean).join(' · ') || '바탕화면';
+    const fileUrl = savePath.replace(/\\/g, '/');
+    const reply = [
+      `**한 줄 결론**: 현재 PC 화면(${sunshineScreenWidth}×${sunshineScreenHeight})을 캡처해 저장했습니다.`,
+      `• **저장 파일**: [${fileName}](file:///${fileUrl})`,
+      `• **현재 마우스 좌표**: (${sunshineCursorX}, ${sunshineCursorY})`,
+      `• **열려 있는 주요 창**: ${openWins}`
+    ].join('\n');
+    return {
+      handled: true,
+      thoughtText: `SunshineHostDaemon 실시간 프레임 버퍼를 캡처하여 프로젝트 폴더에 저장했습니다.`,
+      tools: [makeTool('PC 실시간 화면 캡처 저장', fileUrl, reply)],
+      reply
+    };
+  }
+
+  // 9. Running Processes / Open Windows List ("실행중인 프로그램", "프로세스 목록", "열려있는 창 목록")
+  if (/(?:프로세스\s*목록|실행\s*중인\s*프로그램|열려\s*있는\s*창|켜져\s*있는\s*창|창\s*목록|작업\s*목록)/i.test(cleanPrompt)) {
+    const ps = [
+      `$wins = @(Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | Select-Object -First 8 ProcessName, MainWindowTitle | ForEach-Object { "• [$($_.ProcessName)] $($_.MainWindowTitle)" });`,
+      `$top = @(Get-Process | Sort-Object WorkingSet64 -Descending | Select-Object -First 6 | ForEach-Object { "• $($_.ProcessName) ($([math]::Round($_.WorkingSet64/1MB, 0)) MB)" });`,
+      `Write-Output "[열려 있는 창]";`,
+      `Write-Output ($wins -join "\`n");`,
+      `Write-Output "";`,
+      `Write-Output "[메모리 상위 프로세스]";`,
+      `Write-Output ($top -join "\`n")`
+    ].join(' ');
+    const res = runPowerShellQuick(ps, projectDir, 8000);
+    const reply = `**현재 PC 실행 창 및 상위 프로세스 현황입니다:**\n\n${res.output || '조회 완료'}`;
+    return {
+      handled: true,
+      thoughtText: 'Get-Process를 통해 현재 PC의 활성 창 제목과 메모리 상위 프로세스를 조회했습니다.',
+      tools: [makeTool('PC 활성 창 및 프로세스 조회', 'Get-Process MainWindowTitle & WorkingSet64', res.output)],
+      reply
+    };
+  }
+
+  // 10. File List in Active Project ("파일 목록", "현재 폴더 파일", "디렉토리 목록")
+  if (/(?:파일\s*목록|현재\s*폴더\s*파일|디렉토리\s*목록|폴더\s*안|어떤\s*파일)/i.test(cleanPrompt)) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(projectDir, { withFileTypes: true }).slice(0, 25).map((e) => (
+        e.isDirectory() ? `📁 ${e.name}/` : `📄 ${e.name}`
+      ));
+    } catch {
+      entries = ['(폴더를 읽을 수 없습니다)'];
+    }
+    const projUrl = projectDir.replace(/\\/g, '/');
+    const reply = [
+      `**현재 활성 프로젝트([${currentActiveProjectName}](file:///${projUrl})) 파일 목록입니다:**`,
+      '',
+      entries.join('\n')
+    ].join('\n');
+    return {
+      handled: true,
+      thoughtText: `현재 활성 프로젝트(${currentActiveProjectName})의 디렉토리 엔트리를 스캔했습니다.`,
+      tools: [makeTool(`프로젝트 파일 목록 조회 (${currentActiveProjectName})`, projUrl, entries.join(', '))],
+      reply
+    };
+  }
+
+  // 11. PC Hardware / System Status / Folder Status ("PC 상태", "시스템 상태", "CPU", "메모리", "GPU", "VRAM", "디스크 용량", "폴더 목록")
+  if (/(?:폴더\s*목록|프로젝트\s*목록|pc\s*상태|시스템\s*상태|내\s*pc|컴퓨터\s*상태|작업\s*현황|작업현황|cpu|메모리|ram|gpu|vram|그래픽\s*카드|디스크\s*용량|사양\s*확인)/i.test(cleanPrompt)) {
+    const hwPs = [
+      `$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average;`,
+      `$os = Get-CimInstance Win32_OperatingSystem;`,
+      `$ramUsed = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)/1MB, 1);`,
+      `$ramTotal = [math]::Round($os.TotalVisibleMemorySize/1MB, 1);`,
+      `$disk = Get-PSDrive C;`,
+      `$diskFree = [math]::Round($disk.Free/1GB, 1);`,
+      `$gpu = try { (nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader).Trim() } catch { 'N/A' };`,
+      `Write-Output "CPU 사용률: ${cpu}% | RAM: ${ramUsed}GB / ${ramTotal}GB | C: 여유공간: ${diskFree}GB";`,
+      `Write-Output "GPU 상태: $gpu"`
+    ].join(' ');
+    const hwRes = runPowerShellQuick(hwPs, projectDir, 8000);
+    const statusRes = executePcRemoteCommand('pc_status');
+    const listRes = executePcRemoteCommand('list_projects');
+    const reply = [
+      statusRes.summary,
+      '',
+      '**실시간 하드웨어 · 로컬 AI 상태**',
+      ...(hwRes.output ? hwRes.output.split(/\r?\n/).map((l) => `• ${l}`) : []),
+      `• 로컬 AI CLI: [lcode.py](file:///${LCODE_CLI_PATH.replace(/\\/g, '/')}) (활성화됨)`,
+      '',
+      listRes.summary
+    ].join('\n');
+    return {
+      handled: true,
+      thoughtText: 'PC 실시간 하드웨어(CPU/RAM/GPU/디스크), 브릿지 상태, 로컬 AI CLI 및 프로젝트 목록을 조회했습니다.',
+      tools: [makeTool('PC 시스템·GPU·프로젝트 실시간 진단', 'Win32_Processor · nvidia-smi · listPcProjects', hwRes.output || statusRes.summary)],
+      reply
+    };
+  }
+
+  return { handled: false, forceLocalAiCli: false, effectivePrompt: cleanPrompt };
 }
 
 function recordOverlayExchange(
@@ -1636,7 +2261,9 @@ function recordOverlayExchange(
   reply,
   toolTitle = '안그래비티 라이브 세션 동기화',
   toolPath = '',
-  isPendingBridgeAck = false
+  isPendingBridgeAck = false,
+  customTools = null,
+  customThought = ''
 ) {
   const targetSessionId = (!sessionId || sessionId.includes('session-')) ? currentActiveSessionId : sessionId;
   const list = mobileMessagesBySession.get(targetSessionId) || [];
@@ -1644,6 +2271,19 @@ function recordOverlayExchange(
   const nowIso = new Date(nowMs).toISOString();
   mobileLastTouchedMs.set(targetSessionId, nowMs);
   currentActiveSessionId = targetSessionId;
+  const resolvedTools = Array.isArray(customTools) && customTools.length > 0
+    ? customTools
+    : [
+        {
+          id: `mob-tool-${nowMs}`,
+          title: toolTitle,
+          commandOrPath: toolPath || `session=${targetSessionId}`,
+          outputPreview: reply,
+          durationMs: 160,
+          status: 'COMPLETED'
+        }
+      ];
+  const resolvedThought = customThought || `PC 리모트 컨트롤 및 세션(${targetSessionId.slice(0, 8)}) 실시간 동기화 처리`;
   list.push({
     id: `mob-user-${nowMs}`,
     role: 'USER',
@@ -1663,18 +2303,9 @@ function recordOverlayExchange(
     createdAtMs: nowMs + 1,
     isPendingBridgeAck: Boolean(isPendingBridgeAck),
     bodyText: reply,
-    thoughtText: `PC 리모트 컨트롤 및 세션(${targetSessionId.slice(0, 8)}) 실시간 동기화 처리`,
+    thoughtText: resolvedThought,
     thoughtDurationSec: '0.5초',
-    tools: [
-      {
-        id: `mob-tool-${nowMs}`,
-        title: toolTitle,
-        commandOrPath: toolPath || `session=${targetSessionId}`,
-        outputPreview: reply,
-        durationMs: 160,
-        status: 'COMPLETED'
-      }
-    ]
+    tools: resolvedTools
   });
   mobileMessagesBySession.set(targetSessionId, list);
   bumpSyncRevision('overlay_exchange');
@@ -2251,23 +2882,31 @@ const server = http.createServer((req, res) => {
         const isLocalAi = Boolean(parsed.isLocalAi);
 
         let reply = null;
+        let thoughtText = '';
+        let responseTools = [];
         let injectedIntoRealPcSession = false;
+        const activeProjectDir = path.join(SCRATCH_DIR, currentActiveProjectName);
 
-        // Check if prompt asks to create a project folder on PC
-        const folderMatch = prompt.match(/(?:폴더|프로젝트)\s*(?:생성|만들|추가)[해줘어:\s]*([a-zA-Z0-9_-]+)/i)
-          || prompt.match(/([a-zA-Z0-9_-]+)\s*(?:폴더|프로젝트)\s*(?:생성|만들)/i);
+        // 1. Check conversational PC control commands (works in both Local AI and default modes!)
+        const pcCtrl = executeConversationalPcControl(prompt);
 
-        if (folderMatch && folderMatch[1]) {
-          const created = createPcProjectFolder(folderMatch[1], `모바일 채팅 명령("${prompt}")으로 생성됨`);
-          reply = `PC에 새 프로젝트 폴더를 즉시 생성했습니다.\n• 폴더명: ${created.folderName}\n• 경로: ${created.path}`;
-          sessionId = recordOverlayExchange(sessionId, prompt, reply, 'PC 프로젝트 폴더 생성', created.path, false);
-        } else if (prompt.includes('폴더 목록') || prompt.includes('프로젝트 목록') || prompt.includes('PC 상태') || prompt.includes('작업 현황') || prompt.includes('작업현황')) {
-          const statusRes = executePcRemoteCommand('pc_status');
-          const listRes = executePcRemoteCommand('list_projects');
-          reply = `${statusRes.summary}\n\n${listRes.summary}`;
-          sessionId = recordOverlayExchange(sessionId, prompt, reply, 'PC 실시간 상태 및 폴더 스캔', 'pc_status', false);
-        } else if (isLocalAi) {
-          const localResult = await tryLocalOllama(modelId, prompt);
+        if (pcCtrl.handled) {
+          reply = pcCtrl.reply;
+          thoughtText = pcCtrl.thoughtText || '모바일 대화창 명령으로 PC를 즉시 제어했습니다.';
+          responseTools = Array.isArray(pcCtrl.tools) ? pcCtrl.tools : [];
+          sessionId = recordOverlayExchange(
+            sessionId,
+            prompt,
+            reply,
+            responseTools[0]?.title || '대화형 PC 원격 제어',
+            responseTools[0]?.commandOrPath || 'pc_control',
+            false,
+            responseTools,
+            thoughtText
+          );
+        } else if (isLocalAi || pcCtrl.forceLocalAiCli) {
+          const effectivePrompt = pcCtrl.effectivePrompt || prompt;
+          const localResult = await tryLocalOllama(modelId, effectivePrompt, activeProjectDir);
           if (!localResult.ok) {
             res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({
@@ -2280,9 +2919,31 @@ const server = http.createServer((req, res) => {
             return;
           }
           reply = localResult.reply;
-          sessionId = recordOverlayExchange(sessionId, prompt, reply, `Ollama 로컬 추론 (${modelId})`, modelId, false);
+          thoughtText = `로컬 AI CLI (lcode.py · ${localResult.model || modelId}) 하네스 및 도구를 통해 PC에서 추론·실행했습니다.`;
+          responseTools = Array.isArray(localResult.tools) && localResult.tools.length > 0
+            ? localResult.tools
+            : [
+                {
+                  id: `lcode-infer-${Date.now()}`,
+                  title: `LCODE 로컬 AI CLI 실행 (${localResult.model || modelId})`,
+                  commandOrPath: `python lcode.py -m ${localResult.model || modelId} --json`,
+                  outputPreview: reply.slice(0, 350),
+                  durationMs: Math.round((localResult.elapsedSec || 0.8) * 1000),
+                  status: 'COMPLETED'
+                }
+              ];
+          sessionId = recordOverlayExchange(
+            sessionId,
+            prompt,
+            reply,
+            `LCODE 로컬 AI CLI (${localResult.model || modelId})`,
+            modelId,
+            false,
+            responseTools,
+            thoughtText
+          );
         } else {
-          // Real Antigravity PC Session Injection via language_server.exe agentapi
+          // Real Antigravity PC Session Injection via language_server.exe agentapi + LCODE CLI co-execution
           const targetSessionId = (!sessionId || sessionId.includes('session-')) ? currentActiveSessionId : sessionId;
           sessionId = targetSessionId;
           mobileLastTouchedMs.set(targetSessionId, Date.now());
@@ -2296,7 +2957,6 @@ const server = http.createServer((req, res) => {
 
           if (sentOk) {
             bumpSyncRevision('mobile_chat_injected');
-            // Poll up to ~2.4s (every 200ms) so fast PC responses or immediate tool startups return right away
             let liveAgentReply = null;
             for (let pollIdx = 0; pollIdx < 12; pollIdx++) {
               await new Promise((r) => setTimeout(r, 200));
@@ -2312,19 +2972,42 @@ const server = http.createServer((req, res) => {
                 }
               }
             }
-            reply = liveAgentReply
-              || `PC 안그래비티 세션(${targetSessionId.slice(0, 8)})에 메시지를 즉시 전달했습니다. PC에서 실시간으로 작업을 수행하며 결과가 화면에 자동 반영됩니다.`;
+            if (liveAgentReply) {
+              reply = liveAgentReply;
+              thoughtText = `PC 안그래비티 세션(${targetSessionId.slice(0, 8)})에서 실시간 응답을 수신했습니다.`;
+            } else {
+              // Run fast LCODE CLI (qwen3:4b game profile) so mobile chat gets an immediate intelligent answer & tool execution too
+              const lcodeQuick = await runLcodeCliHarness('game', pcCtrl.effectivePrompt || prompt, activeProjectDir);
+              if (lcodeQuick && lcodeQuick.ok && lcodeQuick.reply) {
+                reply = `${lcodeQuick.reply}\n\n*(PC 안그래비티 세션 \`${targetSessionId.slice(0, 8)}\`에도 동시 전달됨)*`;
+                thoughtText = `PC 안그래비티 세션에 전달함과 동시에 로컬 AI CLI(lcode.py)로 즉시 처리했습니다.`;
+                responseTools = Array.isArray(lcodeQuick.tools) ? lcodeQuick.tools : [];
+              } else {
+                reply = `PC 안그래비티 세션(${targetSessionId.slice(0, 8)})에 메시지를 즉시 전달했습니다. PC에서 실시간으로 작업을 수행하며 결과가 화면에 자동 반영됩니다.`;
+                thoughtText = `PC 안그래비티 세션(${targetSessionId.slice(0, 8)}) 실시간 전달 완료`;
+              }
+            }
             recordOverlayExchange(
               targetSessionId,
               prompt,
               reply,
-              'PC 안그래비티 세션 실시간 전달 (agentapi)',
+              'PC 안그래비티 세션 · LCODE 연동',
               `session=${targetSessionId}`,
-              true
+              !liveAgentReply,
+              responseTools,
+              thoughtText
             );
           } else {
-            reply = `요청하신 "${prompt}" 작업을 현재 세션 및 프로젝트(${currentActiveProjectName})에 반영했습니다.`;
-            recordOverlayExchange(targetSessionId, prompt, reply, '안그래비티 세션 동기화', `session=${targetSessionId}`, false);
+            const lcodeFallback = await runLcodeCliHarness('game', pcCtrl.effectivePrompt || prompt, activeProjectDir);
+            if (lcodeFallback && lcodeFallback.ok && lcodeFallback.reply) {
+              reply = lcodeFallback.reply;
+              thoughtText = `로컬 AI CLI(lcode.py) 하네스를 통해 요청을 처리했습니다.`;
+              responseTools = Array.isArray(lcodeFallback.tools) ? lcodeFallback.tools : [];
+            } else {
+              reply = `요청하신 "${prompt}" 작업을 현재 세션 및 프로젝트(${currentActiveProjectName})에 반영했습니다.`;
+              thoughtText = `안그래비티 세션 동기화 처리`;
+            }
+            recordOverlayExchange(targetSessionId, prompt, reply, 'LCODE 로컬 AI CLI 연동', `session=${targetSessionId}`, false, responseTools, thoughtText);
           }
         }
 
@@ -2341,8 +3024,10 @@ const server = http.createServer((req, res) => {
           engineLabel,
           modelId,
           isLocalAi,
-          source: isLocalAi ? 'ollama' : (injectedIntoRealPcSession ? 'antigravity-agentapi' : 'bridge'),
+          source: pcCtrl.handled ? 'pc-control' : (isLocalAi ? 'lcode-cli' : (injectedIntoRealPcSession ? 'antigravity-agentapi' : 'bridge')),
           reply,
+          thoughtText,
+          tools: responseTools,
           projects: listPcProjects(),
           sessions: liveSessions
         }));
@@ -2361,6 +3046,7 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   ensureAdbReversePortForward();
   setInterval(ensureAdbReversePortForward, 8000).unref();
+  resolveAntigravityAgentApiEnv();
   setupRealtimeFileWatchers();
   ensureSunshineHostDaemonStarted();
   getLiveAntigravitySessions();

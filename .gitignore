@@ -9,4 +9,5 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
-ui_dump*.xml
+*ui_dump*.xml
+.sunshine-host/

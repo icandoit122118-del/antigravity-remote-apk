@@ -3861,6 +3861,11 @@ private fun buildClarificationQuestionForPrompt(
     if (trimmed.isEmpty()) return null
     val lower = trimmed.lowercase()
 
+    // Direct conversational PC control & Local AI CLI prompts must execute immediately without modal interruption
+    if (!lower.contains("옵션 추천") && !lower.contains("방향 선택")) {
+        return null
+    }
+
     val (question, options) = when {
         lower.contains("테스트") || lower.contains("점검") || lower.contains("실측") -> {
             "어떤 범위로 동작 및 테스트를 진행할까요?" to listOf(
@@ -3874,13 +3879,6 @@ private fun buildClarificationQuestionForPrompt(
                 "현재 활성 프로젝트 기준 구조 정리 및 동기화 (권장)",
                 "새 하위 모듈·폴더 구성안 먼저 생성",
                 "기존 파일 유지하며 설정만 업데이트"
-            )
-        }
-        lower.contains("할 일") || lower.contains("정리") || lower.contains("요약") -> {
-            "원하시는 정리 스타일을 선택해 주세요" to listOf(
-                "핵심 결론 + 바로 실행할 액션 3가지 (권장)",
-                "단계별 체크리스트 형태로 상세 정리",
-                "한 줄 요약 위주로 간결하게 브리핑"
             )
         }
         else -> {
