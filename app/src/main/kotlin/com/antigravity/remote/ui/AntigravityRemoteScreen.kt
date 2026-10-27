@@ -1263,11 +1263,7 @@ private fun ChatMessageCard(
     onCopyCode: (String) -> Unit
 ) {
     val isUser = message.role == MessageRole.USER
-    val cardColor = if (isUser) {
-        Color(0xFF17171E).copy(alpha = 0.62f)
-    } else {
-        Color(0xFF101016).copy(alpha = 0.52f)
-    }
+    val cardColor = Color(0xFF000000)
     val bubbleShape = if (isUser) {
         RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
     } else {
@@ -2284,9 +2280,9 @@ private fun TopLeftSessionAndProjectPopover(
     val pinnedProjectNames = remember { mutableStateMapOf<String, Boolean>() }
     val swipedOpenRows = remember { mutableStateMapOf<String, Boolean>() }
 
-    val popoverBg = Color(0xFF0C0C10).copy(alpha = 0.98f)
-    val cardBg = Color(0xFF16161E)
-    val selectedCardBg = Color(0xFF1B3530)
+    val popoverBg = Color(0xFF000000)
+    val cardBg = Color(0xFF0E0E13)
+    val selectedCardBg = Color(0xFF172D29)
 
     Surface(
         modifier = Modifier
@@ -2729,9 +2725,9 @@ private fun UnifiedSettingsDialog(
     var localModelInput by rememberSaveable { mutableStateOf(initialLocalModel) }
     var showAdvanced by rememberSaveable { mutableStateOf(false) }
 
-    val unifiedDialogBg = Color(0xFF0C0C10).copy(alpha = 0.96f)
-    val unifiedCardBg = Color(0xFF15151C).copy(alpha = 0.52f)
-    val unifiedSelectedCardBg = Color(0xFF1E3B36).copy(alpha = 0.62f)
+    val unifiedDialogBg = Color(0xFF000000)
+    val unifiedCardBg = Color(0xFF0E0E13)
+    val unifiedSelectedCardBg = Color(0xFF172D29)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -3420,9 +3416,9 @@ private fun AiClarificationBottomCard(
     var selectedIdx by remember(request.id) { mutableIntStateOf(0) }
     var customOtherText by remember(request.id) { mutableStateOf("") }
     val otherOptionIdx = request.options.size
-    val cardBg = Color(0xFF13131B)
-    val optionBg = Color(0xFF1B1B25)
-    val selectedOptionBg = Color(0xFF1B3631)
+    val cardBg = Color(0xFF000000)
+    val optionBg = Color(0xFF0E0E13)
+    val selectedOptionBg = Color(0xFF172D29)
 
     Surface(
         modifier = Modifier
