@@ -11,21 +11,21 @@
         android:fillColor="#000000"
         android:pathData="M0,0h108v108h-108z" />
 
-    <!-- Subtle Deep Emerald Ambient Glow at Core -->
+    <!-- Olympian Gold & Calm Sage Core Aura -->
     <path
         android:pathData="M0,0h108v108h-108z">
         <aapt:attr name="android:fillColor">
             <gradient
                 android:centerX="54"
                 android:centerY="50"
-                android:gradientRadius="42"
+                android:gradientRadius="44"
                 android:type="radial">
                 <item
-                    android:color="#142C27"
+                    android:color="#242921"
                     android:offset="0.0" />
                 <item
-                    android:color="#081210"
-                    android:offset="0.55" />
+                    android:color="#0E1917"
+                    android:offset="0.52" />
                 <item
                     android:color="#000000"
                     android:offset="1.0" />

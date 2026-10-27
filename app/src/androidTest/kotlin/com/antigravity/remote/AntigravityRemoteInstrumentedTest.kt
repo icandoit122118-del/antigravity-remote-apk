@@ -2,11 +2,14 @@ package com.antigravity.remote
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeRight
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -43,6 +46,34 @@ class AntigravityRemoteInstrumentedTest {
         assertTrue(composeTestRule.onAllNodesWithText("나").fetchSemanticsNodes().isEmpty())
         assertTrue(composeTestRule.onAllNodesWithText("안그래비티 도우미").fetchSemanticsNodes().isEmpty())
 
+        // 1-c. Press and drag across chat message text to select text, then test Copy, Paste, and Annotation (주석)
+        composeTestRule.onAllNodesWithTag("chat_message_text").onFirst().performTouchInput {
+            swipeRight(startX = left + 20f, endX = right - 20f, durationMillis = 260L)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithContentDescription("선택 글자 복사").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("선택 글자 붙여넣기").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("선택 글자 주석").assertIsDisplayed()
+
+        composeTestRule.onNodeWithContentDescription("선택 글자 복사").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithContentDescription("복사한 글자 붙여넣기").assertIsDisplayed()
+
+        composeTestRule.onNodeWithContentDescription("선택 글자 붙여넣기").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithContentDescription("선택 글자 주석").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithContentDescription("주석 저장").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("주석 저장").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithContentDescription("주석 삭제").assertIsDisplayed()
+
+        composeTestRule.onNodeWithContentDescription("글자 선택 해제").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithContentDescription("붙여넣기 배너 닫기").performClick()
+        composeTestRule.waitForIdle()
+
         // 2. Tap inline [+] button to verify Photo, File, Video, and GitHub Push actions appear
         composeTestRule.onNodeWithContentDescription("첨부 및 작업 메뉴 열기").performClick()
         composeTestRule.waitForIdle()
@@ -61,8 +92,7 @@ class AntigravityRemoteInstrumentedTest {
         composeTestRule.onNodeWithContentDescription("모델 및 추론 선택").performClick()
         composeTestRule.waitForIdle()
 
-        // 4. Tap compact Send arrow when input is empty to send the AI-work-based recommended prompt;
-        // verify the button transforms into Stop ("스트리밍 중지") and tapping it stops streaming
+        // 4. Tap compact Send arrow to send prompt; verify the button transforms into Stop ("스트리밍 중지") and tapping it stops streaming
         composeTestRule.onNodeWithContentDescription("메시지 전송").performClick()
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithContentDescription("스트리밍 중지").assertIsDisplayed()

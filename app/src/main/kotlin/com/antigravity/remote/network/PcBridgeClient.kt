@@ -81,8 +81,8 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port/api/status")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 550
-                    readTimeout = 650
+                    connectTimeout = 900
+                    readTimeout = 3500
                     setRequestProperty("Accept", "application/json")
                 }
                 if (connection.responseCode in 200..299) {
@@ -313,8 +313,8 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port/api/sessions")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 650
-                    readTimeout = 1400
+                    connectTimeout = 900
+                    readTimeout = 3500
                     setRequestProperty("Accept", "application/json")
                 }
                 if (connection.responseCode in 200..299) {
@@ -1055,8 +1055,8 @@ object PcBridgeClient {
                 val url = URL("http://$candidate:$port/api/stream/frame")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 500
-                    readTimeout = 900
+                    connectTimeout = 900
+                    readTimeout = 3500
                     useCaches = false
                     setRequestProperty("Accept", "image/jpeg")
                 }

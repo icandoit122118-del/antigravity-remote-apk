@@ -3,6 +3,7 @@ package com.antigravity.remote
 import com.antigravity.remote.model.AiEngineCatalog
 import com.antigravity.remote.model.AntigravityFixtures
 import com.antigravity.remote.model.BridgeConnectionState
+import com.antigravity.remote.model.ChatTextSelectionEngine
 import com.antigravity.remote.model.InspectorViewMode
 import com.antigravity.remote.model.MoonlightFpsTarget
 import com.antigravity.remote.model.MoonlightInputPacket
@@ -242,5 +243,40 @@ class AntigravityRemoteUnitTest {
         )
         assertNotNull("Sunshine input response metadata must not be null", clickMeta)
         assertTrue(clickMeta!!.screenWidth > 0)
+    }
+
+    @Test
+    fun chatTextSelectionEngine_resolvesDragRangePasteAndAnnotations() {
+        val sample = "현재 열려 있는 PC 안그래비티 세션과 실시간으로 연동되어 있습니다."
+
+        // 1. Dragging across characters resolves exact range and extracts selected text
+        val (start, end) = ChatTextSelectionEngine.resolveSelectionRange(sample, 9, 20)
+        assertEquals(9, start)
+        assertEquals(20, end)
+        val extracted = ChatTextSelectionEngine.extractSelectedText(sample, start, end)
+        assertEquals("PC 안그래비티 세션", extracted)
+
+        // 2. Single-point hold expands to surrounding word
+        val (wStart, wEnd) = ChatTextSelectionEngine.resolveSelectionRange(sample, 13, 13)
+        assertTrue(wEnd > wStart)
+        assertEquals("안그래비티", ChatTextSelectionEngine.extractSelectedText(sample, wStart, wEnd))
+
+        // 3. Pasting selected text into empty or existing input
+        val pastedFirst = ChatTextSelectionEngine.pasteIntoInput("", extracted)
+        assertEquals("PC 안그래비티 세션", pastedFirst)
+        val pastedSecond = ChatTextSelectionEngine.pasteIntoInput(pastedFirst, "동작 확인")
+        assertEquals("PC 안그래비티 세션 동작 확인", pastedSecond)
+
+        // 4. Creating and formatting annotation
+        val annot = ChatTextSelectionEngine.createAnnotation(
+            selectedText = extracted,
+            noteText = "중요 확인",
+            startIndex = start,
+            endIndex = end,
+            timestamp = "오후 11:30"
+        )
+        assertEquals("PC 안그래비티 세션", annot.selectedText)
+        assertEquals("중요 확인", annot.note)
+        assertEquals("[주석] \"PC 안그래비티 세션\" — 중요 확인", ChatTextSelectionEngine.formatAnnotationPrompt(annot))
     }
 }

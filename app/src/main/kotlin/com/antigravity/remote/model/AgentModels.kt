@@ -456,6 +456,102 @@ data class ToolExecutionItem(
     val status: ToolRunStatus = ToolRunStatus.COMPLETED
 )
 
+data class MessageAnnotation(
+    val id: String,
+    val selectedText: String,
+    val note: String,
+    val createdAt: String = "지금",
+    val startIndex: Int = 0,
+    val endIndex: Int = 0
+)
+
+object ChatTextSelectionEngine {
+    /**
+     * Resolves a non-empty character range [startInclusive, endExclusive) for a drag or long-press selection on [text].
+     * If [rawStart] and [rawEnd] span distinct non-blank characters, returns that exact range.
+     * Otherwise expands to the surrounding word or clause so dragging/pressing always yields a valid selection.
+     */
+    fun resolveSelectionRange(
+        text: String,
+        rawStart: Int,
+        rawEnd: Int
+    ): Pair<Int, Int> {
+        if (text.isEmpty()) return 0 to 0
+        val len = text.length
+        val s0 = minOf(rawStart, rawEnd).coerceIn(0, len)
+        val e0 = maxOf(rawStart, rawEnd).coerceIn(0, len)
+
+        if (e0 - s0 >= 2 && text.substring(s0, e0).isNotBlank()) {
+            return s0 to e0
+        }
+
+        val anchor = s0.coerceIn(0, (len - 1).coerceAtLeast(0))
+        var wordStart = anchor
+        var wordEnd = (anchor + 1).coerceAtMost(len)
+
+        while (wordStart > 0 && !text[wordStart - 1].isWhitespace() && text[wordStart - 1] != '\n') {
+            wordStart--
+        }
+        while (wordEnd < len && !text[wordEnd].isWhitespace() && text[wordEnd] != '\n') {
+            wordEnd++
+        }
+
+        if (wordEnd - wordStart >= 2 && text.substring(wordStart, wordEnd).isNotBlank()) {
+            return wordStart to wordEnd
+        }
+
+        val lineStart = text.lastIndexOf('\n', (anchor - 1).coerceAtLeast(0)).let { if (it < 0) 0 else it + 1 }
+        val lineEnd = text.indexOf('\n', anchor).let { if (it < 0) len else it }
+        if (lineEnd > lineStart && text.substring(lineStart, lineEnd).isNotBlank()) {
+            return lineStart to lineEnd
+        }
+
+        return 0 to len
+    }
+
+    fun extractSelectedText(text: String, startIndex: Int, endIndex: Int): String {
+        if (text.isEmpty()) return ""
+        val s = minOf(startIndex, endIndex).coerceIn(0, text.length)
+        val e = maxOf(startIndex, endIndex).coerceIn(s, text.length)
+        return text.substring(s, e).trim()
+    }
+
+    fun pasteIntoInput(currentInput: String, pastedText: String): String {
+        val cleanPaste = pastedText.trim()
+        if (cleanPaste.isEmpty()) return currentInput
+        return if (currentInput.isBlank()) {
+            cleanPaste
+        } else if (currentInput.endsWith(" ") || currentInput.endsWith("\n")) {
+            currentInput + cleanPaste
+        } else {
+            "$currentInput $cleanPaste"
+        }
+    }
+
+    fun createAnnotation(
+        selectedText: String,
+        noteText: String,
+        startIndex: Int = 0,
+        endIndex: Int = selectedText.length,
+        timestamp: String = "지금"
+    ): MessageAnnotation {
+        val cleanSelected = selectedText.trim().ifEmpty { "선택 항목" }
+        val cleanNote = noteText.trim().ifEmpty { "중요 체크" }
+        return MessageAnnotation(
+            id = "annot-${System.currentTimeMillis()}-${cleanSelected.hashCode()}",
+            selectedText = cleanSelected,
+            note = cleanNote,
+            createdAt = timestamp,
+            startIndex = startIndex.coerceAtLeast(0),
+            endIndex = endIndex.coerceAtLeast(startIndex)
+        )
+    }
+
+    fun formatAnnotationPrompt(annotation: MessageAnnotation): String {
+        return "[주석] \"${annotation.selectedText}\" — ${annotation.note}"
+    }
+}
+
 data class ChatMessage(
     val id: String,
     val role: MessageRole,
@@ -470,7 +566,8 @@ data class ChatMessage(
     val isStreaming: Boolean = false,
     val steeringStatusText: String = "",
     val tokenCount: Int = 0,
-    val tokensPerSec: Double = 0.0
+    val tokensPerSec: Double = 0.0,
+    val annotations: List<MessageAnnotation> = emptyList()
 )
 
 data class WorkspaceSession(

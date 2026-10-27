@@ -6,63 +6,91 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <!-- 1. Lower Levitation Shadow Horizon Ring (Glassmorphic Emerald Depth) -->
+    <!-- 1. Subtle Celestial Speed Ring Behind Hermes Crest -->
     <path
-        android:pathData="M34,67 C34,62.5 42.95,59 54,59 C65.05,59 74,62.5 74,67 C74,71.5 65.05,75 54,75 C42.95,75 34,71.5 34,67 Z"
-        android:strokeWidth="2.2"
-        android:fillColor="#00000000">
-        <aapt:attr name="android:strokeColor">
+        android:pathData="M54,26 A28,28 0 1,1 54,82 A28,28 0 1,1 54,26 Z"
+        android:strokeWidth="1.2"
+        android:fillColor="#00000000"
+        android:strokeColor="#28E8B96D" />
+
+    <!-- 2. Left Sweeping Hermes Wing (Three Sculpted Feathers) -->
+    <path
+        android:pathData="M50,43 C42,41 33,35 26,28 C27,36 33,42 42,45 C34,45 28,42 23,38 C25,45 32,49 43,50 C36,51 31,49 27,47 C30,53 38,56 49,55 Z">
+        <aapt:attr name="android:fillColor">
             <gradient
-                android:startX="34"
-                android:startY="67"
-                android:endX="74"
-                android:endY="67"
+                android:startX="24"
+                android:startY="28"
+                android:endX="50"
+                android:endY="55"
                 android:type="linear">
-                <item android:color="#1868C5B2" android:offset="0.0" />
-                <item android:color="#9968C5B2" android:offset="0.5" />
-                <item android:color="#1868C5B2" android:offset="1.0" />
+                <item android:color="#FFFDF8" android:offset="0.0" />
+                <item android:color="#E8B96D" android:offset="0.52" />
+                <item android:color="#68C5B2" android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 2. Secondary Inner Levitation Wave -->
+    <!-- 3. Right Sweeping Hermes Wing (Three Sculpted Feathers) -->
     <path
-        android:pathData="M41,72.5 C45,74.3 63,74.3 67,72.5"
-        android:strokeWidth="1.8"
+        android:pathData="M58,43 C66,41 75,35 82,28 C81,36 75,42 66,45 C74,45 80,42 85,38 C83,45 76,49 65,50 C72,51 77,49 81,47 C78,53 70,56 59,55 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="84"
+                android:startY="28"
+                android:endX="58"
+                android:endY="55"
+                android:type="linear">
+                <item android:color="#FFFDF8" android:offset="0.0" />
+                <item android:color="#E8B96D" android:offset="0.52" />
+                <item android:color="#68C5B2" android:offset="1.0" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- 4. Twin Intertwined Caduceus Signal Serpents (Bi-Directional PC-Mobile Link) -->
+    <path
+        android:pathData="M44,53 C44,60 64,61 64,68 C64,73 58,76 54,77"
+        android:strokeWidth="2.4"
         android:strokeLineCap="round"
         android:fillColor="#00000000"
-        android:strokeColor="#4D68C5B2" />
+        android:strokeColor="#68C5B2" />
 
-    <!-- 3. Left & Right Sculpted Antigravity Arch Wings (Continuous Curvature) -->
     <path
-        android:pathData="M54,28 C64.2,28 71.5,36.2 71.5,47.2 C71.5,54.8 67.4,60.6 62.2,63.2 C60.4,64.1 58.6,62.6 58.9,60.6 C59.4,57.4 61.8,53.2 61.8,47.8 C61.8,41.2 58.5,36.8 54,36.8 C49.5,36.8 46.2,41.2 46.2,47.8 C46.2,53.2 48.6,57.4 49.1,60.6 C49.4,62.6 47.6,64.1 45.8,63.2 C40.6,60.6 36.5,54.8 36.5,47.2 C36.5,36.2 43.8,28 54,28 Z">
+        android:pathData="M64,53 C64,60 44,61 44,68 C44,73 50,76 54,77"
+        android:strokeWidth="2.4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:strokeColor="#E8B96D" />
+
+    <!-- 5. Central Hermes Herald Staff (Caduceus Shaft) -->
+    <path
+        android:pathData="M52.3,34 L55.7,34 L55.2,80 L52.8,80 Z">
         <aapt:attr name="android:fillColor">
             <gradient
                 android:startX="54"
-                android:startY="28"
+                android:startY="34"
                 android:endX="54"
-                android:endY="64"
+                android:endY="80"
                 android:type="linear">
-                <item android:color="#FFFDF9" android:offset="0.0" />
-                <item android:color="#CBECE4" android:offset="0.45" />
-                <item android:color="#68C5B2" android:offset="0.82" />
-                <item android:color="#2E7D6E" android:offset="1.0" />
+                <item android:color="#FFFDF8" android:offset="0.0" />
+                <item android:color="#E8B96D" android:offset="0.65" />
+                <item android:color="#68C5B2" android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>
 
-    <!-- 4. Floating Zero-Gravity Core Sphere (Suspended inside the Arch) -->
+    <!-- 6. Radiant Apex Orb of Hermes -->
     <path
-        android:pathData="M54,44.5 A6.2,6.2 0 1,1 54,56.9 A6.2,6.2 0 1,1 54,44.5 Z">
+        android:pathData="M54,24.5 A5.2,5.2 0 1,1 54,34.9 A5.2,5.2 0 1,1 54,24.5 Z">
         <aapt:attr name="android:fillColor">
             <gradient
-                android:centerX="52.2"
-                android:centerY="48.5"
-                android:gradientRadius="8.5"
+                android:centerX="52.5"
+                android:centerY="28.0"
+                android:gradientRadius="7.0"
                 android:type="radial">
                 <item android:color="#FFFFFF" android:offset="0.0" />
-                <item android:color="#9BE2D3" android:offset="0.52" />
-                <item android:color="#4BA896" android:offset="1.0" />
+                <item android:color="#F4D393" android:offset="0.55" />
+                <item android:color="#D49B43" android:offset="1.0" />
             </gradient>
         </aapt:attr>
     </path>

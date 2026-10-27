@@ -1619,81 +1619,67 @@ async function ensureOllamaServerRunning() {
 }
 
 function runLcodeCliHarness(modelId, prompt, cwdPath) {
-  return new Promise((resolve) => {
-    if (!fs.existsSync(LCODE_CLI_PATH)) {
-      resolve(null);
-      return;
-    }
-    const targetCwd = cwdPath && fs.existsSync(cwdPath) ? cwdPath : path.join(SCRATCH_DIR, currentActiveProjectName);
-    const rawModel = String(modelId || '').trim();
-    const effectiveModel = (!rawModel || rawModel.includes('antigravity') || rawModel.includes('gemini-4') || rawModel.includes('gemini-3') || rawModel.includes('claude') || rawModel.includes('gpt-oss'))
-      ? 'game'
-      : rawModel;
+  if (!fs.existsSync(LCODE_CLI_PATH)) {
+    return null;
+  }
+  const targetCwd = cwdPath && fs.existsSync(cwdPath) ? cwdPath : path.join(SCRATCH_DIR, currentActiveProjectName);
+  const rawModel = String(modelId || '').trim();
+  const effectiveModel = (!rawModel || rawModel.includes('antigravity') || rawModel.includes('gemini-4') || rawModel.includes('gemini-3') || rawModel.includes('claude') || rawModel.includes('gpt-oss'))
+    ? 'game'
+    : rawModel;
 
-    const args = [
-      LCODE_CLI_PATH,
-      '-m', effectiveModel,
-      '-w', currentActiveProjectName || 'default',
-      '--cwd', targetCwd,
-      '--json',
-      prompt
-    ];
+  const args = [
+    LCODE_CLI_PATH,
+    '-m', effectiveModel,
+    '-w', currentActiveProjectName || 'default',
+    '--cwd', targetCwd,
+    '--json',
+    prompt
+  ];
 
-    const proc = spawn('python', args, {
+  const pythonExe = fs.existsSync('C:\\Users\\icand\\AppData\\Local\\Programs\\Python\\Python312\\python.exe')
+    ? 'C:\\Users\\icand\\AppData\\Local\\Programs\\Python\\Python312\\python.exe'
+    : 'python';
+
+  try {
+    const out = execFileSync(pythonExe, args, {
       cwd: targetCwd,
+      encoding: 'utf8',
+      timeout: Math.max(LOCAL_AI_TIMEOUT_MS, 45000),
       windowsHide: true,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8' }
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' }
     });
-
-    let stdoutStr = '';
-    let stderrStr = '';
-    const timer = setTimeout(() => {
-      try { proc.kill(); } catch {}
-      resolve(null);
-    }, Math.max(LOCAL_AI_TIMEOUT_MS, 45000));
-
-    proc.stdout.on('data', (chunk) => { stdoutStr += chunk.toString('utf8'); });
-    proc.stderr.on('data', (chunk) => { stderrStr += chunk.toString('utf8'); });
-    proc.on('error', () => {
-      clearTimeout(timer);
-      resolve(null);
-    });
-    proc.on('close', () => {
-      clearTimeout(timer);
-      const trimmed = stdoutStr.trim();
-      if (!trimmed) {
-        resolve(null);
-        return;
+    const trimmed = String(out || '').trim();
+    if (!trimmed) return null;
+    try {
+      const lines = trimmed.split(/\r?\n/);
+      const lastJsonLine = [...lines].reverse().find((l) => l.trim().startsWith('{') && l.trim().endsWith('}')) || trimmed;
+      const parsed = JSON.parse(lastJsonLine);
+      if (parsed && parsed.ok && parsed.reply) {
+        return {
+          ok: true,
+          source: 'lcode-cli',
+          model: parsed.model || effectiveModel,
+          speed: parsed.speed || 0,
+          elapsedSec: parsed.elapsedSec || 0,
+          tools: Array.isArray(parsed.tools) ? parsed.tools : [],
+          reply: `${parsed.reply}\n\n[⚡ Local AI CLI (lcode.py · ${parsed.model || effectiveModel}) | ${parsed.speed || 0} tok/s]`
+        };
       }
-      try {
-        const lines = trimmed.split(/\r?\n/);
-        const lastJsonLine = [...lines].reverse().find((l) => l.trim().startsWith('{') && l.trim().endsWith('}')) || trimmed;
-        const parsed = JSON.parse(lastJsonLine);
-        if (parsed && parsed.ok && parsed.reply) {
-          resolve({
-            ok: true,
-            source: 'lcode-cli',
-            model: parsed.model || effectiveModel,
-            speed: parsed.speed || 0,
-            elapsedSec: parsed.elapsedSec || 0,
-            tools: Array.isArray(parsed.tools) ? parsed.tools : [],
-            reply: `${parsed.reply}\n\n[⚡ Local AI CLI (lcode.py · ${parsed.model || effectiveModel}) | ${parsed.speed || 0} tok/s]`
-          });
-          return;
-        }
-      } catch {
-        // Fallback if raw text was printed
-      }
-      resolve({
-        ok: true,
-        source: 'lcode-cli',
-        model: effectiveModel,
-        speed: 0,
-        tools: [],
-        reply: trimmed
-      });
-    });
-  });
+    } catch {
+      // Fallback if raw text was printed
+    }
+    return {
+      ok: true,
+      source: 'lcode-cli',
+      model: effectiveModel,
+      speed: 0,
+      tools: [],
+      reply: trimmed
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function tryLocalOllama(modelId, prompt, cwdPath = '') {
@@ -1732,14 +1718,17 @@ async function tryLocalOllama(modelId, prompt, cwdPath = '') {
           keep_alive: '5m',
           options: {
             temperature: 0.2,
-            num_predict: 512
+            num_predict: 1024
           }
         }),
         signal: controller.signal
       });
 
       const data = await res.json().catch(() => ({}));
-      const content = String(data?.message?.content || '').trim();
+      const rawContent = String(data?.message?.content || '').trim();
+      const content = rawContent.includes('</think>')
+        ? rawContent.split('</think>').pop().trim()
+        : rawContent;
       if (res.ok && content) {
         return {
           ok: true,
@@ -2222,15 +2211,15 @@ function executeConversationalPcControl(rawPrompt) {
   // 11. PC Hardware / System Status / Folder Status ("PC 상태", "시스템 상태", "CPU", "메모리", "GPU", "VRAM", "디스크 용량", "폴더 목록")
   if (/(?:폴더\s*목록|프로젝트\s*목록|pc\s*상태|시스템\s*상태|내\s*pc|컴퓨터\s*상태|작업\s*현황|작업현황|cpu|메모리|ram|gpu|vram|그래픽\s*카드|디스크\s*용량|사양\s*확인)/i.test(cleanPrompt)) {
     const hwPs = [
-      `$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average;`,
-      `$os = Get-CimInstance Win32_OperatingSystem;`,
-      `$ramUsed = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)/1MB, 1);`,
-      `$ramTotal = [math]::Round($os.TotalVisibleMemorySize/1MB, 1);`,
-      `$disk = Get-PSDrive C;`,
-      `$diskFree = [math]::Round($disk.Free/1GB, 1);`,
-      `$gpu = try { (nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader).Trim() } catch { 'N/A' };`,
-      `Write-Output "CPU 사용률: ${cpu}% | RAM: ${ramUsed}GB / ${ramTotal}GB | C: 여유공간: ${diskFree}GB";`,
-      `Write-Output "GPU 상태: $gpu"`
+      '$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average;',
+      '$os = Get-CimInstance Win32_OperatingSystem;',
+      '$ramUsed = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory)/1MB, 1);',
+      '$ramTotal = [math]::Round($os.TotalVisibleMemorySize/1MB, 1);',
+      '$disk = Get-PSDrive C;',
+      '$diskFree = [math]::Round($disk.Free/1GB, 1);',
+      '$gpu = try { (nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu --format=csv,noheader).Trim() } catch { "N/A" };',
+      'Write-Output "CPU 사용률: $($cpu)% | RAM: $($ramUsed)GB / $($ramTotal)GB | C: 여유공간: $($diskFree)GB";',
+      'Write-Output "GPU 상태: $gpu"'
     ].join(' ');
     const hwRes = runPowerShellQuick(hwPs, projectDir, 8000);
     const statusRes = executePcRemoteCommand('pc_status');

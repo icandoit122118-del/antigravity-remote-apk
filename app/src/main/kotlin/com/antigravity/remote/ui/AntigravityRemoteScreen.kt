@@ -113,11 +113,16 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -127,7 +132,9 @@ import com.antigravity.remote.model.AiEngineOption
 import com.antigravity.remote.model.AntigravityFixtures
 import com.antigravity.remote.model.BridgeConnectionState
 import com.antigravity.remote.model.ChatMessage
+import com.antigravity.remote.model.ChatTextSelectionEngine
 import com.antigravity.remote.model.InspectorViewMode
+import com.antigravity.remote.model.MessageAnnotation
 import com.antigravity.remote.model.MessageRole
 import com.antigravity.remote.model.MoonlightFpsTarget
 import com.antigravity.remote.model.MoonlightInputPacket
@@ -149,6 +156,7 @@ import com.antigravity.remote.ui.theme.tactilePressScale
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -222,8 +230,13 @@ fun AntigravityRemoteScreen() {
         selectedNormalIndex.coerceIn(0, (normalSessions.size - 1).coerceAtLeast(0))
     }
 
+    val fallbackSession = remember { AntigravityFixtures.defaultSessions().first() }
     val currentSession by remember(viewMode, activeSessionIndex, normalSessions.size, worstCaseSessions.size) {
-        derivedStateOf { activeSessions[activeSessionIndex] }
+        derivedStateOf {
+            activeSessions.getOrNull(activeSessionIndex.coerceIn(0, (activeSessions.size - 1).coerceAtLeast(0)))
+                ?: activeSessions.firstOrNull()
+                ?: fallbackSession
+        }
     }
 
     // Streaming & Mid-Stream Steering (대화조정) State
@@ -237,8 +250,10 @@ fun AntigravityRemoteScreen() {
     // Prompt Input
     var promptInput by rememberSaveable { mutableStateOf("") }
 
-    // Clipboard feedback
+    // Clipboard & Text Selection / Annotation state
     var copiedBlockId by remember { mutableStateOf<String?>(null) }
+    var copiedClipboardText by rememberSaveable { mutableStateOf("") }
+    val messageAnnotationsMap = remember { mutableStateMapOf<String, List<MessageAnnotation>>() }
 
     // Optional details toggle (collapsed by default so main screen stays super clean!)
     val expandedDetails = remember { mutableStateMapOf<String, Boolean>() }
@@ -756,7 +771,7 @@ fun AntigravityRemoteScreen() {
                     .weight(1f)
                     .fillMaxWidth()
                     .pointerInput(Unit) {
-                        val edgeWidthPx = 72.dp.toPx()
+                        val edgeWidthPx = 22.dp.toPx()
                         val openDistancePx = 56.dp.toPx()
                         awaitEachGesture {
                             val down = awaitFirstDown(
@@ -865,8 +880,14 @@ fun AntigravityRemoteScreen() {
                                         (message.role == MessageRole.AGENT && message.id == currentSession.messages.lastOrNull()?.id)
                                 )
 
+                                val mergedAnnotations = remember(message.id, message.annotations, messageAnnotationsMap[message.id]) {
+                                    val localList = messageAnnotationsMap[message.id].orEmpty()
+                                    (message.annotations + localList).distinctBy { it.id }
+                                }
+
                                 ChatMessageCard(
                                     message = message,
+                                    annotations = mergedAnnotations,
                                     isStreamingBubble = isStreamingThisBubble,
                                     streamPhaseLabel = streamPhaseLabel,
                                     steeringStatusLabel = steeringStatusLabel,
@@ -878,6 +899,7 @@ fun AntigravityRemoteScreen() {
                                     },
                                     onCopyCode = { codeText ->
                                         copyToClipboard(context, codeText)
+                                        copiedClipboardText = codeText
                                         copiedBlockId = message.id
                                         coroutineScope.launch {
                                             delay(1800L)
@@ -885,6 +907,30 @@ fun AntigravityRemoteScreen() {
                                                 copiedBlockId = null
                                             }
                                         }
+                                    },
+                                    onCopySelectedText = { selectedText ->
+                                        copyToClipboard(context, selectedText)
+                                        copiedClipboardText = selectedText
+                                    },
+                                    onPasteSelectedText = { selectedText ->
+                                        copyToClipboard(context, selectedText)
+                                        copiedClipboardText = selectedText
+                                        promptInput = ChatTextSelectionEngine.pasteIntoInput(promptInput, selectedText)
+                                    },
+                                    onSaveAnnotation = { annotation ->
+                                        val currentList = messageAnnotationsMap[message.id].orEmpty()
+                                        messageAnnotationsMap[message.id] = currentList + annotation
+                                    },
+                                    onDeleteAnnotation = { annotationId ->
+                                        val currentList = messageAnnotationsMap[message.id].orEmpty()
+                                        messageAnnotationsMap[message.id] = currentList.filterNot { it.id == annotationId }
+                                    },
+                                    onSendAnnotationPrompt = { annotation ->
+                                        val currentList = messageAnnotationsMap[message.id].orEmpty()
+                                        if (currentList.none { it.id == annotation.id }) {
+                                            messageAnnotationsMap[message.id] = currentList + annotation
+                                        }
+                                        triggerAgentPrompt(ChatTextSelectionEngine.formatAnnotationPrompt(annotation))
                                     }
                                 )
                             }
@@ -960,6 +1006,7 @@ fun AntigravityRemoteScreen() {
                 quickPrompts = currentSession.quickPrompts,
                 recommendedPrompt = recommendedPrompt,
                 promptText = promptInput,
+                copiedClipboardText = copiedClipboardText,
                 isStreaming = isStreaming,
                 activeEngine = activeEngine,
                 engines = engineOptions,
@@ -968,6 +1015,15 @@ fun AntigravityRemoteScreen() {
                 showPlusMenuPopup = showPlusMenuPopup,
                 reducedMotion = reducedMotion,
                 onPromptTextChange = { promptInput = it },
+                onPasteClipboardText = {
+                    val clip = copiedClipboardText.ifBlank { readFromClipboard(context) }
+                    if (clip.isNotBlank()) {
+                        promptInput = ChatTextSelectionEngine.pasteIntoInput(promptInput, clip)
+                    }
+                },
+                onDismissClipboardBar = {
+                    copiedClipboardText = ""
+                },
                 onQuickPromptClick = { quickText ->
                     focusManager.clearFocus()
                     triggerAgentPrompt(quickText)
@@ -1638,6 +1694,7 @@ private fun SimpleElephantHeader(
 @Composable
 private fun ChatMessageCard(
     message: ChatMessage,
+    annotations: List<MessageAnnotation>,
     isStreamingBubble: Boolean,
     streamPhaseLabel: String,
     steeringStatusLabel: String,
@@ -1645,14 +1702,39 @@ private fun ChatMessageCard(
     copiedBlockId: String?,
     reducedMotion: Boolean,
     onToggleDetail: () -> Unit,
-    onCopyCode: (String) -> Unit
+    onCopyCode: (String) -> Unit,
+    onCopySelectedText: (String) -> Unit,
+    onPasteSelectedText: (String) -> Unit,
+    onSaveAnnotation: (MessageAnnotation) -> Unit,
+    onDeleteAnnotation: (String) -> Unit,
+    onSendAnnotationPrompt: (MessageAnnotation) -> Unit
 ) {
+    val view = LocalView.current
+    val coroutineScope = rememberCoroutineScope()
     val isUser = message.role == MessageRole.USER
     val cardColor = Color(0xFF000000)
     val bubbleShape = if (isUser) {
         RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 20.dp, bottomEnd = 6.dp)
     } else {
         RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp, bottomStart = 6.dp, bottomEnd = 20.dp)
+    }
+
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var selectionStart by remember(message.id) { mutableIntStateOf(0) }
+    var selectionEnd by remember(message.id) { mutableIntStateOf(0) }
+    var isSelectionActive by remember(message.id) { mutableStateOf(false) }
+    var showAnnotationComposer by remember(message.id) { mutableStateOf(false) }
+    var annotationDraftText by remember(message.id) { mutableStateOf("") }
+    var inlineFeedbackBadge by remember(message.id) { mutableStateOf("") }
+
+    fun showTransientFeedback(feedback: String) {
+        inlineFeedbackBadge = feedback
+        coroutineScope.launch {
+            delay(2000L)
+            if (inlineFeedbackBadge == feedback) {
+                inlineFeedbackBadge = ""
+            }
+        }
     }
 
     Box(
@@ -1674,6 +1756,56 @@ private fun ChatMessageCard(
                 }
             }
 
+            val selectedSubstring = remember(cleanBody, isSelectionActive, selectionStart, selectionEnd) {
+                if (!isSelectionActive) {
+                    ""
+                } else {
+                    ChatTextSelectionEngine.extractSelectedText(cleanBody, selectionStart, selectionEnd)
+                }
+            }
+
+            val annotatedBody = remember(cleanBody, isSelectionActive, selectionStart, selectionEnd, annotations) {
+                buildAnnotatedString {
+                    append(cleanBody)
+                    // 1. Highlight saved annotations with warm gold underline
+                    for (annot in annotations) {
+                        val matchIdx = if (annot.startIndex >= 0 && annot.endIndex > annot.startIndex && annot.endIndex <= cleanBody.length) {
+                            annot.startIndex to annot.endIndex
+                        } else {
+                            val idx = cleanBody.indexOf(annot.selectedText)
+                            if (idx >= 0) idx to (idx + annot.selectedText.length).coerceAtMost(cleanBody.length) else null
+                        }
+                        if (matchIdx != null && matchIdx.second > matchIdx.first) {
+                            addStyle(
+                                style = SpanStyle(
+                                    background = AntigravityPalette.WarmLampGold.copy(alpha = 0.22f),
+                                    color = AntigravityPalette.WarmIvoryInk,
+                                    textDecoration = TextDecoration.Underline
+                                ),
+                                start = matchIdx.first,
+                                end = matchIdx.second
+                            )
+                        }
+                    }
+                    // 2. Highlight active drag-selected character range with bright sage selection tint
+                    if (isSelectionActive && cleanBody.isNotEmpty()) {
+                        val s = minOf(selectionStart, selectionEnd).coerceIn(0, cleanBody.length)
+                        val e = maxOf(selectionStart, selectionEnd).coerceIn(s, cleanBody.length)
+                        if (e > s) {
+                            addStyle(
+                                style = SpanStyle(
+                                    background = AntigravityPalette.CalmSageAccent.copy(alpha = 0.38f),
+                                    color = Color(0xFFFFFFFF),
+                                    fontWeight = FontWeight.SemiBold
+                                ),
+                                start = s,
+                                end = e
+                            )
+                        }
+                    }
+                }
+            }
+
             Surface(
                 modifier = Modifier.widthIn(max = if (isUser) 308.dp else 348.dp),
                 shape = bubbleShape,
@@ -1682,11 +1814,497 @@ private fun ChatMessageCard(
                 Column(
                     modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp)
                 ) {
-                    // Main Answer Text Only (No top PC remote sync badge, no author name or timestamp)
+                    // Main Answer Text with Press-and-Drag Character Selection ("글자를 눌러서 끌어당기면 글자 선택된 항목 복사, 붙여넣기, 주석")
                     Text(
-                        text = cleanBody,
-                        style = AntigravityTypography.ChatBody
+                        text = annotatedBody,
+                        style = AntigravityTypography.ChatBody,
+                        onTextLayout = { textLayoutResult = it },
+                        modifier = Modifier
+                            .testTag("chat_message_text")
+                            .pointerInput(cleanBody) {
+                                if (cleanBody.isEmpty()) return@pointerInput
+                                val slop = viewConfiguration.touchSlop
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    val downPos = down.position
+                                    val downTime = System.currentTimeMillis()
+                                    var totalDx = 0f
+                                    var totalDy = 0f
+                                    var dragSelectEngaged = false
+                                    var currentPos = downPos
+
+                                    while (true) {
+                                        val event = withTimeoutOrNull(45L) { awaitPointerEvent() }
+                                        if (event == null) {
+                                            val heldMs = System.currentTimeMillis() - downTime
+                                            if (!dragSelectEngaged && heldMs >= 210L && abs(totalDx) < slop && abs(totalDy) < slop) {
+                                                dragSelectEngaged = true
+                                                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                                val layout = textLayoutResult
+                                                val rawIdx = layout?.getOffsetForPosition(downPos) ?: 0
+                                                val (s, e) = ChatTextSelectionEngine.resolveSelectionRange(cleanBody, rawIdx, rawIdx)
+                                                selectionStart = s
+                                                selectionEnd = e
+                                                isSelectionActive = e > s
+                                            }
+                                            continue
+                                        }
+                                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!change.pressed) {
+                                            if (dragSelectEngaged) {
+                                                change.consume()
+                                            }
+                                            break
+                                        }
+                                        val delta = change.positionChange()
+                                        totalDx += delta.x
+                                        totalDy += delta.y
+                                        currentPos = change.position
+                                        val heldMs = System.currentTimeMillis() - downTime
+
+                                        if (!dragSelectEngaged) {
+                                            val isHorizontalDrag = abs(totalDx) >= slop * 0.42f && abs(totalDx) >= abs(totalDy) * 0.65f
+                                            val isHoldDrag = heldMs >= 180L && (abs(totalDx) >= slop * 0.35f || abs(totalDy) >= slop * 0.35f)
+                                            val isVerticalScroll = abs(totalDy) > slop * 1.35f && abs(totalDy) > abs(totalDx) * 1.6f && heldMs < 180L
+                                            if (isVerticalScroll) {
+                                                return@awaitEachGesture
+                                            }
+                                            if (isHorizontalDrag || isHoldDrag) {
+                                                dragSelectEngaged = true
+                                                view.performHapticFeedback(HapticFeedbackConstants.TEXT_HANDLE_MOVE)
+                                            }
+                                        }
+
+                                        if (dragSelectEngaged) {
+                                            change.consume()
+                                            val layout = textLayoutResult
+                                            val rawStart = layout?.getOffsetForPosition(downPos) ?: 0
+                                            val rawEnd = layout?.getOffsetForPosition(currentPos) ?: cleanBody.length
+                                            val (s, e) = ChatTextSelectionEngine.resolveSelectionRange(cleanBody, rawStart, rawEnd)
+                                            selectionStart = s
+                                            selectionEnd = e
+                                            isSelectionActive = e > s
+                                        }
+                                    }
+                                }
+                            }
                     )
+
+                    // Floating Selection Toolbar: [복사] · [붙여넣기] · [주석] · [전체선택] · [해제]
+                    AnimatedVisibility(
+                        visible = isSelectionActive && selectedSubstring.isNotEmpty(),
+                        enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(150)) + fadeIn(tween(150)),
+                        exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(130)) + fadeOut(tween(130))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(Color(0xFF101319))
+                                .border(
+                                    width = 1.dp,
+                                    color = AntigravityPalette.CalmSageAccent.copy(alpha = 0.28f),
+                                    shape = RoundedCornerShape(14.dp)
+                                )
+                                .padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Top row: Selected text preview + [전체선택] + [해제]
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "선택됨: \"${selectedSubstring}\"",
+                                    style = AntigravityTypography.SecondaryBody.copy(
+                                        color = AntigravityPalette.CalmSageAccent,
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF1A1E26))
+                                            .clickable(role = Role.Button) {
+                                                selectionStart = 0
+                                                selectionEnd = cleanBody.length
+                                                isSelectionActive = true
+                                            }
+                                            .semantics { contentDescription = "글자 전체 선택" }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "전체선택",
+                                            style = AntigravityTypography.SecondaryBody.copy(
+                                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                                                fontSize = 10.5.sp
+                                            )
+                                        )
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0xFF1A1E26))
+                                            .clickable(role = Role.Button) {
+                                                isSelectionActive = false
+                                                showAnnotationComposer = false
+                                            }
+                                            .semantics { contentDescription = "글자 선택 해제" }
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "해제",
+                                            style = AntigravityTypography.SecondaryBody.copy(
+                                                color = AntigravityPalette.MistSlateInk,
+                                                fontSize = 10.5.sp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Primary Action Row: [복사] · [붙여넣기] · [주석]
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                // 1. 복사 (Copy selected text to clipboard)
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 36.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFF1A2422))
+                                        .clickable(role = Role.Button) {
+                                            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                            onCopySelectedText(selectedSubstring)
+                                            showTransientFeedback("선택한 글자 복사됨")
+                                        }
+                                        .semantics { contentDescription = "선택 글자 복사" }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "복사",
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = AntigravityPalette.CalmSageAccent,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    )
+                                }
+
+                                // 2. 붙여넣기 (Paste selected text directly into chat input box)
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 36.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0xFF1A2422))
+                                        .clickable(role = Role.Button) {
+                                            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                            onPasteSelectedText(selectedSubstring)
+                                            showTransientFeedback("입력창에 붙여넣기 완료")
+                                        }
+                                        .semantics { contentDescription = "선택 글자 붙여넣기" }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "붙여넣기",
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = AntigravityPalette.WarmIvoryInk,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    )
+                                }
+
+                                // 3. 주석 (Open annotation composer for selected text)
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .defaultMinSize(minHeight = 36.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (showAnnotationComposer) {
+                                                AntigravityPalette.WarmLampGold.copy(alpha = 0.25f)
+                                            } else {
+                                                Color(0xFF242018)
+                                            }
+                                        )
+                                        .clickable(role = Role.Button) {
+                                            view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                            showAnnotationComposer = !showAnnotationComposer
+                                        }
+                                        .semantics { contentDescription = "선택 글자 주석" }
+                                        .padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "주석",
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = AntigravityPalette.WarmLampGold,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    )
+                                }
+                            }
+
+                            if (inlineFeedbackBadge.isNotBlank()) {
+                                Text(
+                                    text = inlineFeedbackBadge,
+                                    style = AntigravityTypography.SecondaryBody.copy(
+                                        color = AntigravityPalette.CalmSageAccent,
+                                        fontSize = 11.sp
+                                    )
+                                )
+                            }
+
+                            // Inline Annotation Composer when [주석] is active
+                            AnimatedVisibility(
+                                visible = showAnnotationComposer,
+                                enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(140)) + fadeIn(tween(140)),
+                                exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(120)) + fadeOut(tween(120))
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF161920))
+                                        .padding(10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    // Quick annotation preset tags
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        listOf("중요 확인", "수정 요청", "추가 설명 필요").forEach { presetNote ->
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(Color(0xFF22252E))
+                                                    .clickable(role = Role.Button) {
+                                                        annotationDraftText = presetNote
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            ) {
+                                                Text(
+                                                    text = presetNote,
+                                                    style = AntigravityTypography.SecondaryBody.copy(
+                                                        color = AntigravityPalette.WarmLampGold,
+                                                        fontSize = 10.5.sp
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Annotation note input field
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(Color(0xFF0C0E12))
+                                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                                    ) {
+                                        if (annotationDraftText.isEmpty()) {
+                                            Text(
+                                                text = "선택한 글자에 대한 주석·메모를 입력하세요...",
+                                                style = AntigravityTypography.SecondaryBody.copy(
+                                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.38f),
+                                                    fontSize = 12.sp
+                                                )
+                                            )
+                                        }
+                                        BasicTextField(
+                                            value = annotationDraftText,
+                                            onValueChange = { annotationDraftText = it },
+                                            textStyle = AntigravityTypography.ChatBody.copy(fontSize = 12.5.sp),
+                                            cursorBrush = SolidColor(AntigravityPalette.WarmLampGold),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .semantics { contentDescription = "주석 메모 입력" }
+                                        )
+                                    }
+
+                                    // Save Annotation / Send Annotation as Prompt buttons
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .defaultMinSize(minHeight = 34.dp)
+                                                .clip(RoundedCornerShape(9.dp))
+                                                .background(AntigravityPalette.WarmLampGold)
+                                                .clickable(role = Role.Button) {
+                                                    val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
+                                                    val created = ChatTextSelectionEngine.createAnnotation(
+                                                        selectedText = selectedSubstring,
+                                                        noteText = annotationDraftText.ifBlank { "중요 확인" },
+                                                        startIndex = minOf(selectionStart, selectionEnd),
+                                                        endIndex = maxOf(selectionStart, selectionEnd),
+                                                        timestamp = timeFmt
+                                                    )
+                                                    onSaveAnnotation(created)
+                                                    annotationDraftText = ""
+                                                    showAnnotationComposer = false
+                                                    showTransientFeedback("주석이 저장되었습니다")
+                                                }
+                                                .semantics { contentDescription = "주석 저장" }
+                                                .padding(vertical = 7.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "주석 저장",
+                                                style = AntigravityTypography.PillLabel.copy(
+                                                    color = AntigravityPalette.DeepForestInk,
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            )
+                                        }
+
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .defaultMinSize(minHeight = 34.dp)
+                                                .clip(RoundedCornerShape(9.dp))
+                                                .background(Color(0xFF1E3B36))
+                                                .clickable(role = Role.Button) {
+                                                    val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
+                                                    val created = ChatTextSelectionEngine.createAnnotation(
+                                                        selectedText = selectedSubstring,
+                                                        noteText = annotationDraftText.ifBlank { "이 부분 확인해줘" },
+                                                        startIndex = minOf(selectionStart, selectionEnd),
+                                                        endIndex = maxOf(selectionStart, selectionEnd),
+                                                        timestamp = timeFmt
+                                                    )
+                                                    annotationDraftText = ""
+                                                    showAnnotationComposer = false
+                                                    isSelectionActive = false
+                                                    onSendAnnotationPrompt(created)
+                                                }
+                                                .semantics { contentDescription = "주석 대화 전송" }
+                                                .padding(vertical = 7.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = "주석 전송",
+                                                style = AntigravityTypography.PillLabel.copy(
+                                                    color = AntigravityPalette.CalmSageAccent,
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Saved Annotations List inside the message bubble
+                    if (annotations.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            annotations.forEach { annot ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(Color(0xFF12141B))
+                                        .border(
+                                            width = 1.dp,
+                                            color = AntigravityPalette.WarmLampGold.copy(alpha = 0.28f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "주석 · \"${annot.selectedText}\"",
+                                            style = AntigravityTypography.PillLabel.copy(
+                                                color = AntigravityPalette.WarmLampGold,
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            ),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text(
+                                                text = "복사",
+                                                style = AntigravityTypography.SecondaryBody.copy(
+                                                    color = AntigravityPalette.CalmSageAccent,
+                                                    fontSize = 10.5.sp
+                                                ),
+                                                modifier = Modifier
+                                                    .clickable(role = Role.Button) {
+                                                        onCopySelectedText("${annot.selectedText} - ${annot.note}")
+                                                        showTransientFeedback("주석 복사됨")
+                                                    }
+                                                    .semantics { contentDescription = "주석 복사" }
+                                            )
+                                            Text(
+                                                text = "붙여넣기",
+                                                style = AntigravityTypography.SecondaryBody.copy(
+                                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
+                                                    fontSize = 10.5.sp
+                                                ),
+                                                modifier = Modifier
+                                                    .clickable(role = Role.Button) {
+                                                        onPasteSelectedText(ChatTextSelectionEngine.formatAnnotationPrompt(annot))
+                                                        showTransientFeedback("주석을 입력창에 붙여넣었습니다")
+                                                    }
+                                                    .semantics { contentDescription = "주석 입력창 붙여넣기" }
+                                            )
+                                            Text(
+                                                text = "삭제",
+                                                style = AntigravityTypography.SecondaryBody.copy(
+                                                    color = AntigravityPalette.SoftCoralDanger,
+                                                    fontSize = 10.5.sp
+                                                ),
+                                                modifier = Modifier
+                                                    .clickable(role = Role.Button) {
+                                                        onDeleteAnnotation(annot.id)
+                                                    }
+                                                    .semantics { contentDescription = "주석 삭제" }
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = annot.note,
+                                        style = AntigravityTypography.SecondaryBody.copy(
+                                            color = AntigravityPalette.WarmIvoryInk,
+                                            fontSize = 12.sp
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
 
                     // Small-font live steering / task adjustment status ("대화조정중 · 작업조정중 · 확인중")
                     if (message.steeringStatusText.isNotBlank()) {
@@ -2055,6 +2673,7 @@ private fun SimplePromptInputDock(
     quickPrompts: List<String>,
     recommendedPrompt: String,
     promptText: String,
+    copiedClipboardText: String,
     isStreaming: Boolean,
     activeEngine: AiEngineOption,
     engines: List<AiEngineOption>,
@@ -2063,6 +2682,8 @@ private fun SimplePromptInputDock(
     showPlusMenuPopup: Boolean,
     reducedMotion: Boolean,
     onPromptTextChange: (String) -> Unit,
+    onPasteClipboardText: () -> Unit,
+    onDismissClipboardBar: () -> Unit,
     onQuickPromptClick: (String) -> Unit,
     onSendClick: () -> Unit,
     onStopClick: () -> Unit,
@@ -2293,6 +2914,66 @@ private fun SimplePromptInputDock(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // Quick Paste Pill Bar when text has been copied from the chat window
+        AnimatedVisibility(
+            visible = copiedClipboardText.isNotBlank(),
+            enter = if (reducedMotion) fadeIn(tween(0)) else expandVertically(tween(140)) + fadeIn(tween(140)),
+            exit = if (reducedMotion) fadeOut(tween(0)) else shrinkVertically(tween(120)) + fadeOut(tween(120))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color(0xFF162421))
+                        .border(
+                            width = 1.dp,
+                            color = AntigravityPalette.CalmSageAccent.copy(alpha = 0.32f),
+                            shape = RoundedCornerShape(14.dp)
+                        )
+                        .clickable(role = Role.Button, onClick = onPasteClipboardText)
+                        .semantics { contentDescription = "복사한 글자 붙여넣기" }
+                        .padding(horizontal = 11.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "붙여넣기 · \"${copiedClipboardText}\"",
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = AntigravityPalette.CalmSageAccent,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF15151C))
+                        .clickable(role = Role.Button, onClick = onDismissClipboardBar)
+                        .semantics { contentDescription = "붙여넣기 배너 닫기" }
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "닫기",
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = AntigravityPalette.MistSlateInk,
+                            fontSize = 10.5.sp
+                        )
+                    )
                 }
             }
         }
@@ -4493,6 +5174,15 @@ private fun SystemPromptEditorDialog(
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
     clipboard?.setPrimaryClip(ClipData.newPlainText("Antigravity Text", text))
+}
+
+private fun readFromClipboard(context: Context): String {
+    return try {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        clipboard?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+    } catch (_: Exception) {
+        ""
+    }
 }
 
 /**
