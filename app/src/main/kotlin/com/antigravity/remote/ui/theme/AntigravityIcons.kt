@@ -472,4 +472,94 @@ object AntigravityIcons {
             }
         }.build()
     }
+
+    val PinTack: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "PinTack",
+            defaultWidth = 18.dp,
+            defaultHeight = 18.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(9f, 4f)
+                lineTo(15f, 4f)
+                lineTo(14f, 10f)
+                lineTo(17f, 13f)
+                lineTo(17f, 15f)
+                lineTo(7f, 15f)
+                lineTo(7f, 13f)
+                lineTo(10f, 10f)
+                close()
+                moveTo(12f, 15f)
+                lineTo(12f, 21f)
+            }
+        }.build()
+    }
+
+    val ArchiveBox: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "ArchiveBox",
+            defaultWidth = 18.dp,
+            defaultHeight = 18.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(3.5f, 5f)
+                lineTo(20.5f, 5f)
+                lineTo(20.5f, 9f)
+                lineTo(3.5f, 9f)
+                close()
+                moveTo(5f, 9f)
+                lineTo(5f, 19f)
+                lineTo(19f, 19f)
+                lineTo(19f, 9f)
+                moveTo(10f, 13f)
+                lineTo(14f, 13f)
+            }
+        }.build()
+    }
+
+    val TrashDelete: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "TrashDelete",
+            defaultWidth = 18.dp,
+            defaultHeight = 18.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(4f, 7f)
+                lineTo(20f, 7f)
+                moveTo(9f, 7f)
+                lineTo(9f, 4.5f)
+                lineTo(15f, 4.5f)
+                lineTo(15f, 7f)
+                moveTo(6.5f, 7f)
+                lineTo(7.5f, 19.5f)
+                lineTo(16.5f, 19.5f)
+                lineTo(17.5f, 7f)
+                moveTo(10f, 11f)
+                lineTo(10f, 16f)
+                moveTo(14f, 11f)
+                lineTo(14f, 16f)
+            }
+        }.build()
+    }
 }

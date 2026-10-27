@@ -1,10 +1,10 @@
 {
   "ok": true,
-  "syncedAt": "2026-10-27T04:58:29.276Z",
+  "syncedAt": "2026-10-27T05:40:06.881Z",
   "hostname": "choidongseop",
   "activeSessionId": "ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8",
   "activeProjectName": "antigravity-remote-apk",
-  "lastMobilePrompt": "방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘",
-  "lastPcReply": "[PC 안그래비티 리모트 (choidongseop) 실시간 연동]\n모바일에서 보낸 \"방금 작업한 내용 실측 동작 및 기능 테스트 실행해줘\" 요청이 현재 세션(ace251b1) 및 활성 프로젝트(antigravity-remote-apk)에 동기화되어 처리되었습니다.",
+  "lastMobilePrompt": "생성된 프로젝트 폴더 구조 점검하고 기능 테스트해줘",
+  "lastPcReply": "[PC 안그래비티 리모트 (choidongseop) 실시간 연동]\n모바일에서 보낸 \"생성된 프로젝트 폴더 구조 점검하고 기능 테스트해줘\" 요청이 현재 세션(ace251b1) 및 활성 프로젝트(antigravity-remote-apk)에 동기화되어 처리되었습니다.",
   "totalOverlayExchanges": 1
 }

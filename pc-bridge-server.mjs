@@ -77,6 +77,12 @@ try {
 // Overlay store for mobile messages and mobile-created sessions
 const mobileMessagesBySession = new Map();
 const mobileSessionMeta = new Map();
+const pinnedSessionIds = new Set();
+const archivedSessionIds = new Set();
+const deletedSessionIds = new Set();
+const pinnedProjectNames = new Set();
+const archivedProjectNames = new Set();
+const deletedProjectNames = new Set();
 
 function getLocalLanIp() {
   const interfaces = os.networkInterfaces();
@@ -104,7 +110,7 @@ function listPcProjects() {
   try {
     if (!fs.existsSync(SCRATCH_DIR)) return [];
     return fs.readdirSync(SCRATCH_DIR, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
+      .filter((e) => e.isDirectory() && !archivedProjectNames.has(e.name) && !deletedProjectNames.has(e.name))
       .map((e) => {
         const fullPath = path.join(SCRATCH_DIR, e.name);
         let mtimeMs = 0;
@@ -119,10 +125,14 @@ function listPcProjects() {
           name: e.name,
           path: fullPath.replace(/\\/g, '/'),
           fileCount,
+          pinned: pinnedProjectNames.has(e.name),
           mtimeMs
         };
       })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      .sort((a, b) => {
+        if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+        return b.mtimeMs - a.mtimeMs;
+      });
   } catch {
     return [];
   }
@@ -184,7 +194,7 @@ function createAntigravitySession(rawTitle, rawProjectFolder = '') {
     created_at: nowIso,
     thinking: '모바일 리모트 앱에서 요청한 새 안그래비티 세션과 PC 작업 공간을 초기화했습니다.',
     content: projectInfo
-      ? `새 안그래비티 세션(**${title}**)과 PC 프로젝트 폴더(\`${projectInfo.path}\`)를 생성하고 실시간 연동을 시작했습니다.`
+      ? `새 안그래비티 세션(**${title}**)과 프로젝트(**${projectInfo.folderName}**)를 생성하고 실시간 연동을 시작했습니다.`
       : `새 안그래비티 세션(**${title}**)을 생성하고 PC와 실시간 연동을 시작했습니다.`
   };
 
@@ -381,9 +391,7 @@ function parseTranscriptSession(convId) {
     return {
       id: convId,
       title,
-      ambientCaption: customMeta?.projectPath
-        ? `폴더: ${customMeta.projectFolder} (${customMeta.projectPath})`
-        : `폴더: ${inferredFolder}`,
+      ambientCaption: inferredFolder,
       branchName: inferredFolder,
       activeTaskSummary: isPrimary ? 'PC 안그래비티 리모트 컨트롤 및 실시간 세션 연동' : title,
       durationTag: isRecentlyActive ? 'running' : 'paused',
@@ -406,6 +414,7 @@ function getLiveAntigravitySessions() {
 
   // 1. Put mobile-created sessions first if newly created, plus PRIMARY_CONVERSATION_ID
   for (const [id] of mobileSessionMeta) {
+    if (archivedSessionIds.has(id) || deletedSessionIds.has(id)) continue;
     const parsed = parseTranscriptSession(id);
     if (parsed) {
       results.push(parsed);
@@ -413,7 +422,7 @@ function getLiveAntigravitySessions() {
     }
   }
 
-  if (!seen.has(PRIMARY_CONVERSATION_ID)) {
+  if (!seen.has(PRIMARY_CONVERSATION_ID) && !archivedSessionIds.has(PRIMARY_CONVERSATION_ID) && !deletedSessionIds.has(PRIMARY_CONVERSATION_ID)) {
     const primary = parseTranscriptSession(PRIMARY_CONVERSATION_ID);
     if (primary) {
       results.unshift(primary);
@@ -424,7 +433,7 @@ function getLiveAntigravitySessions() {
   try {
     if (fs.existsSync(BRAIN_DIR)) {
       const entries = fs.readdirSync(BRAIN_DIR, { withFileTypes: true })
-        .filter((e) => e.isDirectory() && !seen.has(e.name))
+        .filter((e) => e.isDirectory() && !seen.has(e.name) && !archivedSessionIds.has(e.name) && !deletedSessionIds.has(e.name))
         .map((e) => {
           const tPath = path.join(BRAIN_DIR, e.name, '.system_generated', 'logs', 'transcript.jsonl');
           const stat = fs.existsSync(tPath) ? fs.statSync(tPath) : null;
@@ -447,6 +456,13 @@ function getLiveAntigravitySessions() {
   } catch {
     // Ignore
   }
+
+  results.sort((a, b) => {
+    const aPin = pinnedSessionIds.has(a.id);
+    const bPin = pinnedSessionIds.has(b.id);
+    if (aPin !== bPin) return aPin ? -1 : 1;
+    return 0;
+  });
 
   return results;
 }
@@ -471,20 +487,20 @@ function executePcRemoteCommand(command, args = {}) {
   }
 
   if (command === 'list_projects') {
-    const lines = projects.map((p, idx) => `${idx + 1}. ${p.name} (${p.path}) — 파일 ${p.fileCount}개`);
+    const lines = projects.map((p, idx) => `${idx + 1}. ${p.name}`);
     return {
       ok: true,
-      title: 'PC 프로젝트 폴더 목록',
+      title: 'PC 프로젝트 목록',
       summary: lines.length > 0
-        ? `현재 PC 워크스페이스(\`${SCRATCH_DIR.replace(/\\/g, '/')}\`) 폴더 목록입니다:\n` + lines.join('\n')
-        : '생성된 프로젝트 폴더가 없습니다.',
+        ? lines.join('\n')
+        : '생성된 프로젝트가 없습니다.',
       projects
     };
   }
 
   if (command === 'git_status') {
     const targetDir = path.join(SCRATCH_DIR, args.projectName || currentActiveProjectName);
-    let gitOut = 'Git 저장소가 아니거나 변경 사항이 없습니다.';
+    let gitOut = '변경 사항이 없습니다.';
     try {
       gitOut = execSync('git status -s && git log -1 --oneline', {
         cwd: targetDir,
@@ -492,12 +508,12 @@ function executePcRemoteCommand(command, args = {}) {
         timeout: 2500
       }).trim() || '작업 트리가 깨끗합니다 (변경 사항 없음).';
     } catch (e) {
-      gitOut = `경로 확인 완료: ${targetDir.replace(/\\/g, '/')}`;
+      gitOut = `확인 완료 (${args.projectName || currentActiveProjectName})`;
     }
     return {
       ok: true,
-      title: `프로젝트 Git 상태 (${args.projectName || currentActiveProjectName})`,
-      summary: `• 경로: ${targetDir.replace(/\\/g, '/')}\n• 상태:\n${gitOut}`,
+      title: `Git 상태 (${args.projectName || currentActiveProjectName})`,
+      summary: `• 프로젝트: ${args.projectName || currentActiveProjectName}\n• 상태:\n${gitOut}`,
       projects
     };
   }
@@ -794,6 +810,121 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({
           ok: true,
           session: created,
+          projects: listPcProjects(),
+          sessions: getLiveAntigravitySessions()
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/sessions/action') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString('utf8'); });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const sessionId = String(parsed.sessionId || '');
+        const action = String(parsed.action || '');
+        if (sessionId) {
+          if (action === 'pin') {
+            if (pinnedSessionIds.has(sessionId)) {
+              pinnedSessionIds.delete(sessionId);
+            } else {
+              pinnedSessionIds.add(sessionId);
+            }
+          } else if (action === 'archive') {
+            archivedSessionIds.add(sessionId);
+            pinnedSessionIds.delete(sessionId);
+            try {
+              const archiveDir = path.join(ANTIGRAVITY_ROOT, 'archived_sessions');
+              fs.mkdirSync(archiveDir, { recursive: true });
+              fs.writeFileSync(path.join(archiveDir, `${sessionId}.archived.json`), JSON.stringify({ sessionId, archivedAt: new Date().toISOString() }), 'utf8');
+            } catch {
+              // Ignore
+            }
+          } else if (action === 'delete') {
+            deletedSessionIds.add(sessionId);
+            pinnedSessionIds.delete(sessionId);
+            mobileSessionMeta.delete(sessionId);
+            if (sessionId !== PRIMARY_CONVERSATION_ID) {
+              try {
+                const sDir = path.join(BRAIN_DIR, sessionId);
+                if (fs.existsSync(sDir)) fs.rmSync(sDir, { recursive: true, force: true });
+                const aFile = path.join(ANNOTATIONS_DIR, `${sessionId}.pbtxt`);
+                if (fs.existsSync(aFile)) fs.rmSync(aFile, { force: true });
+              } catch {
+                // Ignore active lock
+              }
+            }
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          action,
+          sessionId,
+          projects: listPcProjects(),
+          sessions: getLiveAntigravitySessions()
+        }));
+      } catch (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(err) }));
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/projects/action') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk.toString('utf8'); });
+    req.on('end', () => {
+      try {
+        const parsed = JSON.parse(body || '{}');
+        const folderName = sanitizeFolderName(parsed.folderName || '');
+        const action = String(parsed.action || '');
+        if (folderName) {
+          if (action === 'pin') {
+            if (pinnedProjectNames.has(folderName)) {
+              pinnedProjectNames.delete(folderName);
+            } else {
+              pinnedProjectNames.add(folderName);
+            }
+          } else if (action === 'archive') {
+            archivedProjectNames.add(folderName);
+            pinnedProjectNames.delete(folderName);
+            if (folderName !== 'antigravity-remote-apk') {
+              try {
+                const srcDir = path.join(SCRATCH_DIR, folderName);
+                const archRoot = path.join(ANTIGRAVITY_ROOT, 'archived_projects');
+                fs.mkdirSync(archRoot, { recursive: true });
+                const destDir = path.join(archRoot, folderName);
+                if (fs.existsSync(srcDir)) fs.renameSync(srcDir, destDir);
+              } catch {
+                // Ignore
+              }
+            }
+          } else if (action === 'delete') {
+            deletedProjectNames.add(folderName);
+            pinnedProjectNames.delete(folderName);
+            if (folderName !== 'antigravity-remote-apk') {
+              try {
+                const targetDir = path.join(SCRATCH_DIR, folderName);
+                if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
+              } catch {
+                // Ignore
+              }
+            }
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: true,
+          action,
+          folderName,
           projects: listPcProjects(),
           sessions: getLiveAntigravitySessions()
         }));

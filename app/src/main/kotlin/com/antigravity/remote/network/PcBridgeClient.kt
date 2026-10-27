@@ -359,6 +359,36 @@ object PcBridgeClient {
         }
     )
 
+    suspend fun performSessionAction(
+        host: String,
+        port: Int,
+        sessionId: String,
+        action: String
+    ): LiveSyncState? = postJsonForSyncState(
+        host = host,
+        port = port,
+        endpoint = "/api/sessions/action",
+        payloadObj = JSONObject().apply {
+            put("sessionId", sessionId)
+            put("action", action)
+        }
+    )
+
+    suspend fun performProjectAction(
+        host: String,
+        port: Int,
+        folderName: String,
+        action: String
+    ): LiveSyncState? = postJsonForSyncState(
+        host = host,
+        port = port,
+        endpoint = "/api/projects/action",
+        payloadObj = JSONObject().apply {
+            put("folderName", folderName)
+            put("action", action)
+        }
+    )
+
     suspend fun executeRemoteCommand(
         host: String,
         port: Int,

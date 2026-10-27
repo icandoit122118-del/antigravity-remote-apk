@@ -12,13 +12,17 @@ import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.animation.expandIn
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -832,6 +836,61 @@ fun AntigravityRemoteScreen() {
                     onSelectProjectFolder = { folderName ->
                         activePcProjectName = folderName
                     },
+                    onSessionAction = { sessionId, action ->
+                        val port = bridgePortText.toIntOrNull() ?: 8766
+                        when (action) {
+                            "pin" -> {
+                                val idx = normalSessions.indexOfFirst { it.id == sessionId }
+                                if (idx > 0) {
+                                    val item = normalSessions.removeAt(idx)
+                                    normalSessions.add(0, item)
+                                    selectedNormalIndex = 0
+                                }
+                            }
+                            "archive", "delete" -> {
+                                if (normalSessions.size > 1) {
+                                    val idx = normalSessions.indexOfFirst { it.id == sessionId }
+                                    if (idx >= 0) {
+                                        normalSessions.removeAt(idx)
+                                        selectedNormalIndex = selectedNormalIndex.coerceIn(0, (normalSessions.size - 1).coerceAtLeast(0))
+                                    }
+                                }
+                            }
+                        }
+                        coroutineScope.launch {
+                            val state = PcBridgeClient.performSessionAction(bridgeHost, port, sessionId, action)
+                            if (state != null) {
+                                applyLiveSyncState(state)
+                            }
+                        }
+                    },
+                    onProjectAction = { folderName, action ->
+                        val port = bridgePortText.toIntOrNull() ?: 8766
+                        when (action) {
+                            "pin" -> {
+                                val idx = pcProjects.indexOfFirst { it.name == folderName }
+                                if (idx > 0) {
+                                    val item = pcProjects.removeAt(idx)
+                                    pcProjects.add(0, item)
+                                }
+                            }
+                            "archive", "delete" -> {
+                                val idx = pcProjects.indexOfFirst { it.name == folderName }
+                                if (idx >= 0) {
+                                    pcProjects.removeAt(idx)
+                                    if (activePcProjectName == folderName && pcProjects.isNotEmpty()) {
+                                        activePcProjectName = pcProjects.first().name
+                                    }
+                                }
+                            }
+                        }
+                        coroutineScope.launch {
+                            val state = PcBridgeClient.performProjectAction(bridgeHost, port, folderName, action)
+                            if (state != null) {
+                                applyLiveSyncState(state)
+                            }
+                        }
+                    },
                     onCreateRemoteSession = { sessionTitle, projectFolder ->
                         val port = bridgePortText.toIntOrNull() ?: 8766
                         coroutineScope.launch {
@@ -843,7 +902,7 @@ fun AntigravityRemoteScreen() {
                                 val newSession = WorkspaceSession(
                                     id = "local-session-${System.currentTimeMillis()}",
                                     title = sessionTitle.ifBlank { "새 세션" },
-                                    ambientCaption = "폴더: $folder",
+                                    ambientCaption = folder,
                                     branchName = folder,
                                     activeTaskSummary = "모바일에서 생성한 새 세션",
                                     durationTag = "방금",
@@ -877,7 +936,7 @@ fun AntigravityRemoteScreen() {
                             if (state != null) {
                                 applyLiveSyncState(state)
                             } else {
-                                pcProjects.add(0, PcProjectFolder(folderName, "~/.gemini/antigravity/scratch/$folderName", 1))
+                                pcProjects.add(0, PcProjectFolder(folderName, "", 1))
                                 activePcProjectName = folderName
                             }
                             viewMode = InspectorViewMode.DEMO_NORMAL
@@ -1071,7 +1130,7 @@ private fun SimpleElephantHeader(
                     )
                     Spacer(modifier = Modifier.width(5.dp))
                     Text(
-                        text = "폴더 · $activeProjectFolder",
+                        text = activeProjectFolder,
                         style = AntigravityTypography.SecondaryBody.copy(
                             color = if (connectionState == BridgeConnectionState.CONNECTED_PC) {
                                 AntigravityPalette.CalmSageAccent.copy(alpha = 0.82f)
@@ -1150,7 +1209,10 @@ private fun ChatMessageCard(
         Column(
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
-            val rawText = message.bodyText.trim()
+            val rawText = message.bodyText
+                .replace(Regex("""\s*\(~?/[^)]*\)"""), "")
+                .replace(Regex("""(?:[A-Za-z]:\\|[A-Za-z]:/|~/|/sdcard/)[^\s)`"']+"""), "")
+                .trim()
             val (badgeTag, cleanBody) = remember(rawText, isUser) {
                 if (!isUser && rawText.startsWith("[") && rawText.contains("]")) {
                     val closeIdx = rawText.indexOf("]")
@@ -2114,6 +2176,8 @@ private fun TopLeftSessionAndProjectPopover(
     port: String,
     onSelectSession: (Int) -> Unit,
     onSelectProjectFolder: (String) -> Unit,
+    onSessionAction: (String, String) -> Unit,
+    onProjectAction: (String, String) -> Unit,
     onCreateRemoteSession: (String, String) -> Unit,
     onCreateRemoteProject: (String) -> Unit,
     onSyncNow: () -> Unit,
@@ -2121,12 +2185,13 @@ private fun TopLeftSessionAndProjectPopover(
 ) {
     val reducedMotion = rememberReducedMotion()
     val pausedSessionIds = remember { mutableStateMapOf<String, Boolean>() }
+    val pinnedSessionIds = remember { mutableStateMapOf<String, Boolean>() }
+    val pinnedProjectNames = remember { mutableStateMapOf<String, Boolean>() }
+    val swipedOpenRows = remember { mutableStateMapOf<String, Boolean>() }
 
-    val popoverBg = Color(0xFF0C0C10).copy(alpha = 0.96f)
-    val cardBg = Color(0xFF15151C).copy(alpha = 0.56f)
-    val selectedCardBg = Color(0xFF1E3B36).copy(alpha = 0.65f)
-    val activeSession = sessions.getOrNull(selectedSessionIndex) ?: sessions.firstOrNull()
-    val isConnectedPc = connectionState == BridgeConnectionState.CONNECTED_PC
+    val popoverBg = Color(0xFF0C0C10).copy(alpha = 0.98f)
+    val cardBg = Color(0xFF16161E)
+    val selectedCardBg = Color(0xFF1B3530)
 
     Surface(
         modifier = Modifier
@@ -2142,112 +2207,21 @@ private fun TopLeftSessionAndProjectPopover(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 480.dp, max = 690.dp)
+                .heightIn(min = 480.dp, max = 700.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 14.dp, vertical = 14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // 1. Current Active Session Name & Project Folder Name Summary Card
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(selectedCardBg)
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (isConnectedPc) AntigravityPalette.CalmSageAccent
-                                    else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f)
-                                )
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = if (isConnectedPc) {
-                                "PC 실시간 세션 · 프로젝트 연동 ($host:$port)"
-                            } else {
-                                "현재 세션 · 프로젝트 폴더"
-                            },
-                            style = AntigravityTypography.PillLabel.copy(
-                                color = AntigravityPalette.CalmSageAccent,
-                                fontSize = 11.sp
-                            ),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF0C0C10).copy(alpha = 0.55f))
-                            .clickable(role = Role.Button, onClick = onSyncNow)
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = "동기화",
-                            style = AntigravityTypography.SecondaryBody.copy(
-                                color = AntigravityPalette.CalmSageAccent,
-                                fontSize = 10.sp
-                            )
-                        )
-                    }
-                }
-
-                Text(
-                    text = "세션명: ${activeSession?.title ?: "Anti-Gravity Program APK Conversion"}",
-                    style = AntigravityTypography.PillLabel.copy(
-                        color = AntigravityPalette.WarmIvoryInk,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
-                Text(
-                    text = "프로젝트 폴더명: $activePcProjectName (~/.gemini/antigravity/scratch/$activePcProjectName)",
-                    style = AntigravityTypography.SecondaryBody.copy(
-                        color = AntigravityPalette.WarmLampGold.copy(alpha = 0.90f),
-                        fontSize = 11.sp
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-
-            // 2. Live PC Sessions Header Row: Conversations on Left, Icon-Only [+] Create Session Button on Right
+            // Top Icon-Only Action Row: Create New Session [+] Icon (No text labels or file paths!)
             val addSessionInteraction = remember { MutableInteractionSource() }
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 2.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Conversations",
-                    style = AntigravityTypography.PillLabel.copy(
-                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f),
-                        fontSize = 11.5.sp
-                    )
-                )
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
+                        .size(32.dp)
                         .tactilePressScale(addSessionInteraction, reducedMotion)
                         .clip(CircleShape)
                         .background(cardBg)
@@ -2273,11 +2247,11 @@ private fun TopLeftSessionAndProjectPopover(
                 }
             }
 
-            // Expanded Session List Layout (Taller height & spacious item cards)
+            // Expanded Session List Layout (Swipe left to reveal Pin / Archive / PC Delete icons on the right!)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 280.dp, max = 420.dp)
+                    .heightIn(min = 250.dp, max = 380.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(7.dp)
             ) {
@@ -2289,73 +2263,115 @@ private fun TopLeftSessionAndProjectPopover(
                     val defaultRunning = session.durationTag != "paused" && session.durationTag != "멈춤"
                     val isPausedOverride = pausedSessionIds[session.id]
                     val isRunning = isPausedOverride?.not() ?: defaultRunning
+                    val isPinned = pinnedSessionIds[session.id] == true
+                    val rowKey = "session:${session.id}"
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 56.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(if (selected) selectedCardBg else cardBg)
-                            .clickable(role = Role.Button) {
-                                onSelectSession(idx)
-                            }
-                            .padding(horizontal = 14.dp, vertical = 11.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    SwipeRevealActionRow(
+                        rowKey = rowKey,
+                        isRevealed = swipedOpenRows[rowKey] == true,
+                        isPinned = isPinned,
+                        reducedMotion = reducedMotion,
+                        onRevealChange = { revealed ->
+                            swipedOpenRows[rowKey] = revealed
+                        },
+                        onPinClick = {
+                            val nextPinned = !isPinned
+                            pinnedSessionIds[session.id] = nextPinned
+                            onSessionAction(session.id, "pin")
+                            swipedOpenRows[rowKey] = false
+                        },
+                        onArchiveClick = {
+                            swipedOpenRows[rowKey] = false
+                            onSessionAction(session.id, "archive")
+                        },
+                        onDeleteClick = {
+                            swipedOpenRows[rowKey] = false
+                            onSessionAction(session.id, "delete")
+                        }
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 56.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(if (selected) selectedCardBg else cardBg)
+                                .clickable(role = Role.Button) {
+                                    if (swipedOpenRows[rowKey] == true) {
+                                        swipedOpenRows[rowKey] = false
+                                    } else {
+                                        onSelectSession(idx)
+                                    }
+                                }
+                                .padding(horizontal = 14.dp, vertical = 11.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = session.title,
-                                style = AntigravityTypography.PillLabel.copy(
-                                    color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.92f),
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = "폴더 · $folderLabel",
-                                style = AntigravityTypography.SecondaryBody.copy(
-                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f),
-                                    fontSize = 11.sp
-                                ),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                            Column(
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (isPinned) {
+                                        Icon(
+                                            imageVector = AntigravityIcons.PinTack,
+                                            contentDescription = null,
+                                            tint = AntigravityPalette.CalmSageAccent,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                    }
+                                    Text(
+                                        text = session.title,
+                                        style = AntigravityTypography.PillLabel.copy(
+                                            color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.92f),
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        ),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = folderLabel,
+                                    style = AntigravityTypography.SecondaryBody.copy(
+                                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f),
+                                        fontSize = 11.sp
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(10.dp))
+
+                            // Animated Running (진행중 spinner) / Paused (멈춤 bars) icon
+                            SessionStatusAnimatedIcon(
+                                isRunning = isRunning,
+                                isSelected = selected,
+                                reducedMotion = reducedMotion,
+                                onToggleState = {
+                                    pausedSessionIds[session.id] = isRunning
+                                }
                             )
                         }
-
-                        Spacer(modifier = Modifier.width(10.dp))
-
-                        // Animated Running (진행중 spinner) / Paused (멈춤 bars) icon
-                        SessionStatusAnimatedIcon(
-                            isRunning = isRunning,
-                            isSelected = selected,
-                            reducedMotion = reducedMotion,
-                            onToggleState = {
-                                pausedSessionIds[session.id] = isRunning
-                            }
-                        )
                     }
                 }
             }
 
-            // 3. Project Folders Row: NO "PC 프로젝트 폴더 목록 (총 9개) · 새 폴더 생성" text!
-            // Instead, Icon-Only [+] Create Folder Button + Expanded Folder Chips in a clean row
+            // Icon-Only [+] Create Project Folder Button Row (No labels, no file paths!)
             val addFolderInteraction = remember { MutableInteractionSource() }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(32.dp)
                         .tactilePressScale(addFolderInteraction, reducedMotion)
                         .clip(CircleShape)
                         .background(cardBg)
@@ -2380,37 +2396,222 @@ private fun TopLeftSessionAndProjectPopover(
                         modifier = Modifier.size(15.dp)
                     )
                 }
+            }
 
-                if (pcProjects.isNotEmpty()) {
-                    LazyRow(
-                        modifier = Modifier.weight(1f),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        items(pcProjects) { proj ->
-                            val isActiveProj = proj.name == activePcProjectName
-                            Box(
+            // Project Names List (Swipe left on any Project Name to reveal Pin / Archive / PC Delete icons on the right!)
+            if (pcProjects.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp, max = 210.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    pcProjects.forEach { proj ->
+                        val isActiveProj = proj.name == activePcProjectName
+                        val isPinnedProj = pinnedProjectNames[proj.name] == true
+                        val projKey = "project:${proj.name}"
+
+                        SwipeRevealActionRow(
+                            rowKey = projKey,
+                            isRevealed = swipedOpenRows[projKey] == true,
+                            isPinned = isPinnedProj,
+                            reducedMotion = reducedMotion,
+                            onRevealChange = { revealed ->
+                                swipedOpenRows[projKey] = revealed
+                            },
+                            onPinClick = {
+                                val nextPinned = !isPinnedProj
+                                pinnedProjectNames[proj.name] = nextPinned
+                                onProjectAction(proj.name, "pin")
+                                swipedOpenRows[projKey] = false
+                            },
+                            onArchiveClick = {
+                                swipedOpenRows[projKey] = false
+                                onProjectAction(proj.name, "archive")
+                            },
+                            onDeleteClick = {
+                                swipedOpenRows[projKey] = false
+                                onProjectAction(proj.name, "delete")
+                            }
+                        ) {
+                            Row(
                                 modifier = Modifier
-                                    .defaultMinSize(minHeight = 34.dp)
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 44.dp)
+                                    .clip(RoundedCornerShape(13.dp))
                                     .background(if (isActiveProj) selectedCardBg else cardBg)
                                     .clickable(role = Role.Button) {
-                                        onSelectProjectFolder(proj.name)
+                                        if (swipedOpenRows[projKey] == true) {
+                                            swipedOpenRows[projKey] = false
+                                        } else {
+                                            onSelectProjectFolder(proj.name)
+                                        }
                                     }
-                                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                                contentAlignment = Alignment.Center
+                                    .padding(horizontal = 14.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
+                                if (isPinnedProj) {
+                                    Icon(
+                                        imageVector = AntigravityIcons.PinTack,
+                                        contentDescription = null,
+                                        tint = AntigravityPalette.WarmLampGold,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
                                 Text(
                                     text = proj.name,
                                     style = AntigravityTypography.SecondaryBody.copy(
-                                        color = if (isActiveProj) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
-                                        fontSize = 11.5.sp,
+                                        color = if (isActiveProj) AntigravityPalette.WarmLampGold else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.86f),
+                                        fontSize = 12.5.sp,
                                         fontWeight = if (isActiveProj) FontWeight.SemiBold else FontWeight.Normal
-                                    )
+                                    ),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Swipe-left action row wrapper for both Session items (세션명) and Project items (프로젝트명).
+ * Swiping left smoothly slides the row left and expands the 3 action icons on the right:
+ * 1. 고정핀 (PinTack)
+ * 2. 보관핀 (ArchiveBox)
+ * 3. PC에서 아예 삭제 (TrashDelete)
+ */
+@Composable
+private fun SwipeRevealActionRow(
+    rowKey: String,
+    isRevealed: Boolean,
+    isPinned: Boolean,
+    reducedMotion: Boolean,
+    onRevealChange: (Boolean) -> Unit,
+    onPinClick: () -> Unit,
+    onArchiveClick: () -> Unit,
+    onDeleteClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    var dragAccumulated by remember(rowKey) { mutableStateOf(0f) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .pointerInput(rowKey, isRevealed) {
+                detectHorizontalDragGestures(
+                    onDragStart = { dragAccumulated = 0f },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        dragAccumulated += dragAmount
+                        if (dragAccumulated < -12f && !isRevealed) {
+                            onRevealChange(true)
+                        } else if (dragAccumulated > 12f && isRevealed) {
+                            onRevealChange(false)
+                        }
+                    }
+                )
+            },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Left / Main sliding card content (shrinks/slides left cleanly when action icons reveal on the right)
+        Box(
+            modifier = Modifier.weight(1f)
+        ) {
+            content()
+        }
+
+        // Right-side Revealed Action Icons: [고정핀] [보관핀] [PC에서 아예 삭제] (Only visible when swiped left!)
+        AnimatedVisibility(
+            visible = isRevealed,
+            enter = if (reducedMotion) {
+                fadeIn(tween(0))
+            } else {
+                expandIn(
+                    expandFrom = Alignment.CenterEnd,
+                    animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing)
+                ) + fadeIn(tween(160))
+            },
+            exit = if (reducedMotion) {
+                fadeOut(tween(0))
+            } else {
+                shrinkOut(
+                    shrinkTowards = Alignment.CenterEnd,
+                    animationSpec = tween(durationMillis = 170, easing = FastOutSlowInEasing)
+                ) + fadeOut(tween(130))
+            }
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 8.dp, end = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 1. 고정핀 (Pin)
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isPinned) AntigravityPalette.CalmSageAccent.copy(alpha = 0.32f)
+                            else Color(0xFF1A2C29)
+                        )
+                        .clickable(role = Role.Button, onClick = onPinClick)
+                        .semantics {
+                            contentDescription = "고정핀"
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AntigravityIcons.PinTack,
+                        contentDescription = null,
+                        tint = AntigravityPalette.CalmSageAccent,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                // 2. 보관핀 (Archive)
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF2B2418))
+                        .clickable(role = Role.Button, onClick = onArchiveClick)
+                        .semantics {
+                            contentDescription = "보관핀"
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AntigravityIcons.ArchiveBox,
+                        contentDescription = null,
+                        tint = AntigravityPalette.WarmLampGold,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                // 3. PC에서 아예 삭제 (Delete from PC)
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF30191C))
+                        .clickable(role = Role.Button, onClick = onDeleteClick)
+                        .semantics {
+                            contentDescription = "PC에서 아예 삭제"
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = AntigravityIcons.TrashDelete,
+                        contentDescription = null,
+                        tint = Color(0xFFE57373),
+                        modifier = Modifier.size(16.dp)
+                    )
                 }
             }
         }
