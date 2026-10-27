@@ -3459,6 +3459,8 @@ private fun AiClarificationBottomCard(
     onSubmit: (String) -> Unit
 ) {
     var selectedIdx by remember(request.id) { mutableIntStateOf(0) }
+    var customOtherText by remember(request.id) { mutableStateOf("") }
+    val otherOptionIdx = request.options.size
     val cardBg = Color(0xFF13131B)
     val optionBg = Color(0xFF1B1B25)
     val selectedOptionBg = Color(0xFF1B3631)
@@ -3494,7 +3496,7 @@ private fun AiClarificationBottomCard(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            // Selectable Options List with smooth tactile press interaction
+            // Selectable Options List + Always-visible "기타" Direct Input Field
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -3557,6 +3559,111 @@ private fun AiClarificationBottomCard(
                         }
                     }
                 }
+
+                // Always-visible "기타" write-in input field
+                val isOtherSelected = selectedIdx == otherOptionIdx || customOtherText.isNotBlank()
+                val otherInputInteraction = remember { MutableInteractionSource() }
+                val isOtherFocused by otherInputInteraction.collectIsFocusedAsState()
+                LaunchedEffect(isOtherFocused) {
+                    if (isOtherFocused) {
+                        selectedIdx = otherOptionIdx
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 42.dp)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(if (isOtherSelected) selectedOptionBg else optionBg)
+                        .border(
+                            width = 1.dp,
+                            color = if (isOtherSelected || isOtherFocused) {
+                                AntigravityPalette.CalmSageAccent.copy(alpha = 0.45f)
+                            } else {
+                                Color.Transparent
+                            },
+                            shape = RoundedCornerShape(13.dp)
+                        )
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            role = Role.RadioButton,
+                            onClick = { selectedIdx = otherOptionIdx }
+                        )
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (isOtherSelected) AntigravityPalette.CalmSageAccent
+                                else Color(0xFF2B2B38)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isOtherSelected) {
+                            Icon(
+                                imageVector = AntigravityIcons.CheckMark,
+                                contentDescription = null,
+                                tint = AntigravityPalette.DeepForestInk,
+                                modifier = Modifier.size(10.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(9.dp))
+                    Text(
+                        text = "기타",
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = if (isOtherSelected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.85f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (customOtherText.isEmpty()) {
+                            Text(
+                                text = "원하시는 내용을 직접 입력하세요...",
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                    fontSize = 12.sp
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        BasicTextField(
+                            value = customOtherText,
+                            onValueChange = {
+                                customOtherText = it
+                                selectedIdx = otherOptionIdx
+                            },
+                            interactionSource = otherInputInteraction,
+                            singleLine = true,
+                            textStyle = AntigravityTypography.SecondaryBody.copy(
+                                color = AntigravityPalette.WarmIvoryInk,
+                                fontSize = 12.sp
+                            ),
+                            cursorBrush = SolidColor(AntigravityPalette.CalmSageAccent),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                            keyboardActions = KeyboardActions(
+                                onDone = {
+                                    val chosen = customOtherText.trim().ifBlank {
+                                        request.options.first()
+                                    }
+                                    onSubmit(chosen)
+                                }
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
 
             // Two Choice Action Buttons: [건너뛰기] and [제출]
@@ -3609,7 +3716,11 @@ private fun AiClarificationBottomCard(
                             indication = null,
                             role = Role.Button,
                             onClick = {
-                                val chosen = request.options.getOrElse(selectedIdx) { request.options.first() }
+                                val chosen = if (selectedIdx == otherOptionIdx || customOtherText.isNotBlank()) {
+                                    customOtherText.trim().ifBlank { "기타 (직접 지정)" }
+                                } else {
+                                    request.options.getOrElse(selectedIdx) { request.options.first() }
+                                }
                                 onSubmit(chosen)
                             }
                         )
