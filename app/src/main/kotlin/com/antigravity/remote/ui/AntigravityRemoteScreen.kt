@@ -756,7 +756,7 @@ fun AntigravityRemoteScreen() {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.28f))
+                    .background(Color.Black.copy(alpha = 0.54f))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
@@ -1017,34 +1017,69 @@ private fun SimpleElephantHeader(
                 }
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(10.dp))
 
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.Center
             ) {
-                Text(
-                    text = currentSessionTitle,
-                    style = AntigravityTypography.PillLabel.copy(
-                        color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.68f),
-                        fontSize = 11.sp
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "폴더 · $activeProjectFolder",
-                    style = AntigravityTypography.SecondaryBody.copy(
-                        color = if (connectionState == BridgeConnectionState.CONNECTED_PC) {
-                            AntigravityPalette.CalmSageAccent.copy(alpha = 0.65f)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = currentSessionTitle,
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.86f),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = if (isSessionPopupOpen) AntigravityIcons.ChevronUp else AntigravityIcons.ChevronDown,
+                        contentDescription = null,
+                        tint = if (isSessionPopupOpen) {
+                            AntigravityPalette.CalmSageAccent
                         } else {
-                            AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f)
+                            AntigravityPalette.WarmIvoryInk.copy(alpha = 0.52f)
                         },
-                        fontSize = 9.5.sp
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(5.5.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (connectionState == BridgeConnectionState.CONNECTED_PC) {
+                                    AntigravityPalette.CalmSageAccent
+                                } else {
+                                    AntigravityPalette.WarmIvoryInk.copy(alpha = 0.38f)
+                                }
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = "폴더 · $activeProjectFolder",
+                        style = AntigravityTypography.SecondaryBody.copy(
+                            color = if (connectionState == BridgeConnectionState.CONNECTED_PC) {
+                                AntigravityPalette.CalmSageAccent.copy(alpha = 0.82f)
+                            } else {
+                                AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f)
+                            },
+                            fontSize = 10.5.sp
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 
@@ -1111,17 +1146,57 @@ private fun ChatMessageCard(
         Column(
             horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
         ) {
+            val rawText = message.bodyText.trim()
+            val (badgeTag, cleanBody) = remember(rawText, isUser) {
+                if (!isUser && rawText.startsWith("[") && rawText.contains("]")) {
+                    val closeIdx = rawText.indexOf("]")
+                    val tag = rawText.substring(1, closeIdx).trim()
+                    val rest = rawText.substring(closeIdx + 1).trimStart('\n', ' ')
+                    if (rest.isNotBlank()) tag to rest else null to rawText
+                } else {
+                    null to rawText
+                }
+            }
+
             Surface(
-                modifier = Modifier.widthIn(max = 315.dp),
+                modifier = Modifier.widthIn(max = if (isUser) 308.dp else 348.dp),
                 shape = bubbleShape,
                 color = cardColor
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    modifier = Modifier.padding(horizontal = 15.dp, vertical = 11.dp)
                 ) {
+                    if (badgeTag != null) {
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF1E3B36).copy(alpha = 0.42f))
+                                .padding(horizontal = 8.dp, vertical = 3.5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(5.dp)
+                                    .clip(CircleShape)
+                                    .background(AntigravityPalette.CalmSageAccent)
+                            )
+                            Spacer(modifier = Modifier.width(5.dp))
+                            Text(
+                                text = badgeTag,
+                                style = AntigravityTypography.PillLabel.copy(
+                                    color = AntigravityPalette.CalmSageAccent,
+                                    fontSize = 10.5.sp
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(7.dp))
+                    }
+
                     // Main Answer Text Only (No author name or timestamp)
                     Text(
-                        text = message.bodyText,
+                        text = cleanBody,
                         style = AntigravityTypography.ChatBody
                     )
 
@@ -1642,13 +1717,22 @@ private fun SimplePromptInputDock(
                                             )
                                         )
                                     }
-                                    Text(
-                                        text = if (isSel) "✓" else engine.providerTag,
-                                        style = AntigravityTypography.SecondaryBody.copy(
-                                            color = if (isSel) tint else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
-                                            fontSize = 10.5.sp
+                                    if (isSel) {
+                                        Icon(
+                                            imageVector = AntigravityIcons.CheckMark,
+                                            contentDescription = null,
+                                            tint = tint,
+                                            modifier = Modifier.size(13.dp)
                                         )
-                                    )
+                                    } else {
+                                        Text(
+                                            text = engine.providerTag,
+                                            style = AntigravityTypography.SecondaryBody.copy(
+                                                color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
+                                                fontSize = 10.5.sp
+                                            )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1740,17 +1824,15 @@ private fun SimplePromptInputDock(
                     },
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = "+",
-                    style = AntigravityTypography.CardTitle.copy(
-                        color = if (showPlusMenuPopup) {
-                            AntigravityPalette.CalmSageAccent
-                        } else {
-                            AntigravityPalette.WarmIvoryInk.copy(alpha = 0.58f)
-                        },
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.Medium
-                    )
+                Icon(
+                    imageVector = AntigravityIcons.PlusStroke,
+                    contentDescription = null,
+                    tint = if (showPlusMenuPopup) {
+                        AntigravityPalette.CalmSageAccent
+                    } else {
+                        AntigravityPalette.WarmIvoryInk.copy(alpha = 0.62f)
+                    },
+                    modifier = Modifier.size(14.dp)
                 )
             }
 
@@ -1892,12 +1974,11 @@ private fun PlusActionRow(
                 )
             )
         }
-        Text(
-            text = "›",
-            style = AntigravityTypography.CardTitle.copy(
-                color = accentColor.copy(alpha = 0.65f),
-                fontSize = 14.sp
-            )
+        Icon(
+            imageVector = AntigravityIcons.ChevronRight,
+            contentDescription = null,
+            tint = accentColor.copy(alpha = 0.58f),
+            modifier = Modifier.size(14.dp)
         )
     }
 }
@@ -1968,20 +2049,34 @@ private fun TopLeftSessionAndProjectPopover(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (isConnectedPc) {
-                            "● PC 실시간 세션 · 프로젝트 연동 ($host:$port)"
-                        } else {
-                            "○ 현재 세션 · 프로젝트 폴더"
-                        },
-                        style = AntigravityTypography.PillLabel.copy(
-                            color = AntigravityPalette.CalmSageAccent,
-                            fontSize = 11.sp
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isConnectedPc) AntigravityPalette.CalmSageAccent
+                                    else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f)
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isConnectedPc) {
+                                "PC 실시간 세션 · 프로젝트 연동 ($host:$port)"
+                            } else {
+                                "현재 세션 · 프로젝트 폴더"
+                            },
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = AntigravityPalette.CalmSageAccent,
+                                fontSize = 11.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Spacer(modifier = Modifier.width(6.dp))
                     Box(
                         modifier = Modifier
@@ -2004,7 +2099,7 @@ private fun TopLeftSessionAndProjectPopover(
                     text = "세션명: ${activeSession?.title ?: "현재 안그래비티 세션"}",
                     style = AntigravityTypography.PillLabel.copy(
                         color = AntigravityPalette.WarmIvoryInk,
-                        fontSize = 12.sp,
+                        fontSize = 11.5.sp,
                         fontWeight = FontWeight.SemiBold
                     ),
                     maxLines = 1,
@@ -2015,7 +2110,7 @@ private fun TopLeftSessionAndProjectPopover(
                     text = "프로젝트 폴더명: $activePcProjectName (~/.gemini/antigravity/scratch/$activePcProjectName)",
                     style = AntigravityTypography.SecondaryBody.copy(
                         color = AntigravityPalette.WarmLampGold.copy(alpha = 0.90f),
-                        fontSize = 11.sp
+                        fontSize = 10.5.sp
                     ),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -2032,7 +2127,10 @@ private fun TopLeftSessionAndProjectPopover(
             )
 
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 176.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
                 sessions.forEachIndexed { idx, session ->
@@ -2049,7 +2147,7 @@ private fun TopLeftSessionAndProjectPopover(
                             .clickable(role = Role.Button) {
                                 onSelectSession(idx)
                             }
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
+                            .padding(horizontal = 11.dp, vertical = 7.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -2060,7 +2158,7 @@ private fun TopLeftSessionAndProjectPopover(
                                 text = session.title,
                                 style = AntigravityTypography.PillLabel.copy(
                                     color = if (selected) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
-                                    fontSize = 12.sp,
+                                    fontSize = 11.5.sp,
                                     fontWeight = FontWeight.SemiBold
                                 ),
                                 maxLines = 1,
@@ -2076,12 +2174,12 @@ private fun TopLeftSessionAndProjectPopover(
                                 )
                             )
                         }
-                        Spacer(modifier = Modifier.height(2.dp))
+                        Spacer(modifier = Modifier.height(1.dp))
                         Text(
                             text = "프로젝트 폴더: $folderLabel",
                             style = AntigravityTypography.SecondaryBody.copy(
                                 color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.50f),
-                                fontSize = 10.5.sp
+                                fontSize = 10.sp
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -2311,20 +2409,34 @@ private fun UnifiedSettingsDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = if (isConnectedPc) {
-                            "● PC 실시간 연결됨 ($initialHost:$initialPort)"
-                        } else {
-                            "○ PC 연결 대기 ($initialHost:$initialPort)"
-                        },
-                        style = AntigravityTypography.PillLabel.copy(
-                            color = if (isConnectedPc) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.70f),
-                            fontSize = 11.sp
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (isConnectedPc) AntigravityPalette.CalmSageAccent
+                                    else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.45f)
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (isConnectedPc) {
+                                "PC 실시간 연결됨 ($initialHost:$initialPort)"
+                            } else {
+                                "PC 연결 대기 ($initialHost:$initialPort)"
+                            },
+                            style = AntigravityTypography.PillLabel.copy(
+                                color = if (isConnectedPc) AntigravityPalette.CalmSageAccent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.70f),
+                                fontSize = 11.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     Spacer(modifier = Modifier.width(6.dp))
                     Box(
                         modifier = Modifier
@@ -2349,7 +2461,7 @@ private fun UnifiedSettingsDialog(
                     text = "1. 대화할 AI 선택",
                     style = AntigravityTypography.PillLabel.copy(
                         color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.55f),
-                        fontSize = 11.5.sp
+                        fontSize = 11.sp
                     )
                 )
 
@@ -2361,13 +2473,12 @@ private fun UnifiedSettingsDialog(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .defaultMinSize(minHeight = 44.dp)
-                            .clip(RoundedCornerShape(14.dp))
+                            .clip(RoundedCornerShape(12.dp))
                             .background(cardBg)
                             .clickable(role = Role.RadioButton) {
                                 onSelectEngine(engine)
                             }
-                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                            .padding(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -2379,24 +2490,26 @@ private fun UnifiedSettingsDialog(
                                 style = AntigravityTypography.PillLabel.copy(
                                     color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.88f),
                                     fontWeight = FontWeight.SemiBold,
-                                    fontSize = 12.sp
+                                    fontSize = 11.5.sp
                                 )
                             )
                             Text(
                                 text = if (isSelected) "사용 중" else engine.providerTag,
                                 style = AntigravityTypography.SecondaryBody.copy(
                                     color = if (isSelected) accent else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.42f),
-                                    fontSize = 10.5.sp
+                                    fontSize = 10.sp
                                 )
                             )
                         }
-                        Spacer(modifier = Modifier.height(3.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = engine.description,
                             style = AntigravityTypography.SecondaryBody.copy(
                                 color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.48f),
-                                fontSize = 11.sp
-                            )
+                                fontSize = 10.5.sp
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }

@@ -10,6 +10,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -18,9 +19,11 @@ import androidx.compose.ui.composed
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.sp
 
 /**
@@ -81,16 +84,17 @@ object AntigravityTypography {
     val ChatBody = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
-        fontSize = 15.sp,
-        lineHeight = 24.sp,
+        fontSize = 14.sp,
+        lineHeight = 21.sp,
+        letterSpacing = (-0.1).sp,
         color = AntigravityPalette.WarmIvoryInk
     )
 
     val SecondaryBody = TextStyle(
         fontFamily = FontFamily.SansSerif,
         fontWeight = FontWeight.Normal,
-        fontSize = 13.sp,
-        lineHeight = 20.sp,
+        fontSize = 12.5.sp,
+        lineHeight = 18.sp,
         color = AntigravityPalette.MistSlateInk
     )
 
@@ -188,9 +192,18 @@ fun Modifier.tactilePressScale(
 fun AntigravityTheme(
     content: @Composable () -> Unit
 ) {
-    MaterialTheme(
-        colorScheme = ElephantDarkColorScheme,
-        typography = ElephantComposeTypography,
-        content = content
-    )
+    val currentDensity = LocalDensity.current
+    val normalizedDensity = remember(currentDensity) {
+        Density(
+            density = currentDensity.density,
+            fontScale = currentDensity.fontScale.coerceIn(0.95f, 1.04f)
+        )
+    }
+    CompositionLocalProvider(LocalDensity provides normalizedDensity) {
+        MaterialTheme(
+            colorScheme = ElephantDarkColorScheme,
+            typography = ElephantComposeTypography,
+            content = content
+        )
+    }
 }

@@ -429,4 +429,47 @@ object AntigravityIcons {
             }
         }.build()
     }
+
+    val ChevronRight: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "ChevronRight",
+            defaultWidth = 16.dp,
+            defaultHeight = 16.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2.0f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(9f, 6f)
+                lineTo(15f, 12f)
+                lineTo(9f, 18f)
+            }
+        }.build()
+    }
+
+    val PlusStroke: ImageVector by lazy {
+        ImageVector.Builder(
+            name = "PlusStroke",
+            defaultWidth = 18.dp,
+            defaultHeight = 18.dp,
+            viewportWidth = 24f,
+            viewportHeight = 24f
+        ).apply {
+            path(
+                stroke = SolidColor(Color.White),
+                strokeLineWidth = 2.1f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round
+            ) {
+                moveTo(12f, 5.5f)
+                lineTo(12f, 18.5f)
+                moveTo(5.5f, 12f)
+                lineTo(18.5f, 12f)
+            }
+        }.build()
+    }
 }
