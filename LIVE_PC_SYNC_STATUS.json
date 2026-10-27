@@ -1,10 +1,10 @@
 {
   "ok": true,
-  "syncedAt": "2026-10-27T14:51:36.584Z",
+  "syncedAt": "2026-10-27T14:55:13.403Z",
   "hostname": "choidongseop",
   "activeSessionId": "ace251b1-f9a3-4165-a54b-3fe8ea9bc9e8",
   "activeProjectName": "antigravity-remote-apk",
   "lastMobilePrompt": "[시스템 프롬프트 편집] CLAUDE.md (Claude 전역 지침) 저장",
   "lastPcReply": "PC 시스템 프롬프트(CLAUDE.md (Claude 전역 지침))를 업데이트하고 저장했습니다.\n• 줄 수: 128줄 (16682자)\n• 자동 백업 생성 및 실시간 반영 완료",
-  "totalOverlayExchanges": 10
+  "totalOverlayExchanges": 13
 }
