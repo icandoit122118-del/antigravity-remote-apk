@@ -31,6 +31,8 @@ import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -321,11 +323,93 @@ fun AntigravityRemoteScreen() {
         }
     }
 
+    var pendingClarification by remember { mutableStateOf<AiClarificationRequest?>(null) }
+
+    fun executeStreamForAgentMessage(
+        agentMsgId: String,
+        effectivePrompt: String,
+        clarificationChoice: String? = null
+    ) {
+        val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
+        val targetList = if (viewMode == InspectorViewMode.WORST_CASE) worstCaseSessions else normalSessions
+        val idx = if (viewMode == InspectorViewMode.WORST_CASE) selectedWorstIndex else selectedNormalIndex
+        val session = targetList[idx]
+        val port = bridgePortText.toIntOrNull() ?: 8766
+
+        isStreaming = true
+        streamPhaseLabel = "생각중"
+
+        activeStreamJob = coroutineScope.launch {
+            val promptWithClarification = if (!clarificationChoice.isNullOrBlank()) {
+                "$effectivePrompt (선택 방향: $clarificationChoice)"
+            } else {
+                effectivePrompt
+            }
+
+            PcBridgeClient.streamAgentResponse(
+                messageId = agentMsgId,
+                userPrompt = promptWithClarification,
+                sessionId = session.id,
+                host = bridgeHost,
+                port = port,
+                timestamp = timeFmt,
+                engineLabel = "${activeEngine.shortName} (${selectedReasoning.label})",
+                modelId = effectiveModelId,
+                isLocalAi = activeEngine.isLocal
+            ).collect { frame ->
+                streamPhaseLabel = frame.phaseLabel
+                if (frame.fromLiveBridge) {
+                    connectionState = BridgeConnectionState.CONNECTED_PC
+                }
+
+                val choicePrefix = if (!clarificationChoice.isNullOrBlank() && frame.isFinished) {
+                    "• 선택 반영: $clarificationChoice\n\n"
+                } else {
+                    ""
+                }
+                val steerSuffix = if (pendingSteerNotes.isNotEmpty()) {
+                    "\n\n• 실시간 조정 반영 (${pendingSteerNotes.joinToString(", ")}): 요청하신 방향에 맞춰 작업과 답변을 조정했습니다."
+                } else {
+                    ""
+                }
+                val steerBadge = if (pendingSteerNotes.isNotEmpty()) {
+                    if (frame.isFinished) {
+                        "대화조정 · 작업조정 확인 완료 (${pendingSteerNotes.last()})"
+                    } else {
+                        steeringStatusLabel.ifBlank { "대화조정중 · 작업조정중 · 확인중" }
+                    }
+                } else {
+                    ""
+                }
+
+                val latestSession = targetList[idx]
+                val updatedMessages = latestSession.messages.map { existing ->
+                    if (existing.id == agentMsgId) {
+                        frame.message.copy(
+                            bodyText = if (frame.isFinished) choicePrefix + frame.message.bodyText + steerSuffix else frame.message.bodyText,
+                            steeringStatusText = steerBadge
+                        )
+                    } else {
+                        existing
+                    }
+                }
+                targetList[idx] = latestSession.copy(messages = updatedMessages)
+
+                if (frame.isFinished) {
+                    isStreaming = false
+                    activeStreamingAgentMsgId = null
+                    steeringStatusLabel = ""
+                    pendingSteerNotes.clear()
+                }
+            }
+        }
+    }
+
     fun triggerAgentPrompt(rawPrompt: String) {
         val trimmed = rawPrompt.trim()
         if (trimmed.isEmpty()) return
 
-        if (isStreaming) {
+        if (isStreaming && pendingClarification == null) {
             steerActiveStream(trimmed)
             return
         }
@@ -335,6 +419,7 @@ fun AntigravityRemoteScreen() {
         }
 
         stopActiveStream()
+        pendingClarification = null
         val timeFmt = SimpleDateFormat("a h:mm", Locale.KOREAN).format(Date())
         val userMsgId = "user-${System.currentTimeMillis()}"
         val agentMsgId = "agent-${System.currentTimeMillis() + 1}"
@@ -356,8 +441,8 @@ fun AntigravityRemoteScreen() {
             role = MessageRole.AGENT,
             authorName = if (activeEngine.isLocal) activeEngine.shortName else "안그래비티 도우미",
             timestamp = timeFmt,
-            thoughtText = "질문 의도를 파악하고 답변을 정리합니다.",
-            bodyText = "답변을 작성하고 있습니다...",
+            thoughtText = "사용자 요청의 세부 방향을 확인하고 있습니다.",
+            bodyText = "요청 의도를 확인하고 있습니다...",
             isStreaming = true
         )
 
@@ -368,60 +453,15 @@ fun AntigravityRemoteScreen() {
 
         isStreaming = true
         streamPhaseLabel = "생각중"
-        val port = bridgePortText.toIntOrNull() ?: 8766
 
-        activeStreamJob = coroutineScope.launch {
-            PcBridgeClient.streamAgentResponse(
-                messageId = agentMsgId,
-                userPrompt = trimmed,
-                sessionId = session.id,
-                host = bridgeHost,
-                port = port,
-                timestamp = timeFmt,
-                engineLabel = "${activeEngine.shortName} (${selectedReasoning.label})",
-                modelId = effectiveModelId,
-                isLocalAi = activeEngine.isLocal
-            ).collect { frame ->
-                streamPhaseLabel = frame.phaseLabel
-                if (frame.fromLiveBridge) {
-                    connectionState = BridgeConnectionState.CONNECTED_PC
-                }
-
-                val steerSuffix = if (pendingSteerNotes.isNotEmpty()) {
-                    "\n\n• 실시간 조정 반영 (${pendingSteerNotes.joinToString(", ")}): 요청하신 방향에 맞춰 작업과 답변을 조정했습니다."
-                } else {
-                    ""
-                }
-                val steerBadge = if (pendingSteerNotes.isNotEmpty()) {
-                    if (frame.isFinished) {
-                        "대화조정 · 작업조정 확인 완료 (${pendingSteerNotes.last()})"
-                    } else {
-                        steeringStatusLabel.ifBlank { "대화조정중 · 작업조정중 · 확인중" }
-                    }
-                } else {
-                    ""
-                }
-
-                val latestSession = targetList[idx]
-                val updatedMessages = latestSession.messages.map { existing ->
-                    if (existing.id == agentMsgId) {
-                        frame.message.copy(
-                            bodyText = if (frame.isFinished) frame.message.bodyText + steerSuffix else frame.message.bodyText,
-                            steeringStatusText = steerBadge
-                        )
-                    } else {
-                        existing
-                    }
-                }
-                targetList[idx] = latestSession.copy(messages = updatedMessages)
-
-                if (frame.isFinished) {
-                    isStreaming = false
-                    activeStreamingAgentMsgId = null
-                    steeringStatusLabel = ""
-                    pendingSteerNotes.clear()
-                }
+        val clarification = buildClarificationQuestionForPrompt(trimmed, agentMsgId)
+        if (clarification != null) {
+            coroutineScope.launch {
+                delay(180L)
+                pendingClarification = clarification
             }
+        } else {
+            executeStreamForAgentMessage(agentMsgId = agentMsgId, effectivePrompt = trimmed)
         }
     }
 
@@ -684,6 +724,68 @@ fun AntigravityRemoteScreen() {
                             }
                         }
                     }
+                }
+            }
+
+            // 2.5. Smooth Bottom-Up AI Clarification Question Sheet (Appears right below the chat window with [건너뛰기] & [제출] buttons!)
+            val clarificationEase = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
+            AnimatedVisibility(
+                visible = pendingClarification != null,
+                enter = if (reducedMotion) {
+                    fadeIn(tween(120))
+                } else {
+                    slideInVertically(
+                        initialOffsetY = { fullHeight -> fullHeight / 2 },
+                        animationSpec = tween(durationMillis = 310, easing = clarificationEase)
+                    ) + expandVertically(
+                        expandFrom = Alignment.Bottom,
+                        animationSpec = tween(durationMillis = 310, easing = clarificationEase)
+                    ) + fadeIn(
+                        animationSpec = tween(durationMillis = 220)
+                    )
+                },
+                exit = if (reducedMotion) {
+                    fadeOut(tween(100))
+                } else {
+                    slideOutVertically(
+                        targetOffsetY = { fullHeight -> fullHeight / 2 },
+                        animationSpec = tween(durationMillis = 220, easing = clarificationEase)
+                    ) + shrinkVertically(
+                        shrinkTowards = Alignment.Bottom,
+                        animationSpec = tween(durationMillis = 220, easing = clarificationEase)
+                    ) + fadeOut(
+                        animationSpec = tween(durationMillis = 160)
+                    )
+                }
+            ) {
+                val activeQuestion = pendingClarification
+                if (activeQuestion != null) {
+                    AiClarificationBottomCard(
+                        request = activeQuestion,
+                        reducedMotion = reducedMotion,
+                        onSkip = {
+                            val req = pendingClarification
+                            pendingClarification = null
+                            if (req != null) {
+                                executeStreamForAgentMessage(
+                                    agentMsgId = req.agentMessageId,
+                                    effectivePrompt = req.originalPrompt,
+                                    clarificationChoice = null
+                                )
+                            }
+                        },
+                        onSubmit = { selectedOption ->
+                            val req = pendingClarification
+                            pendingClarification = null
+                            if (req != null) {
+                                executeStreamForAgentMessage(
+                                    agentMsgId = req.agentMessageId,
+                                    effectivePrompt = req.originalPrompt,
+                                    clarificationChoice = selectedOption
+                                )
+                            }
+                        }
+                    )
                 }
             }
 
@@ -3287,6 +3389,260 @@ private fun ErrorRecoveryStateCard(
                             )
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+private data class AiClarificationRequest(
+    val id: String,
+    val agentMessageId: String,
+    val originalPrompt: String,
+    val questionTitle: String,
+    val options: List<String>
+)
+
+private fun buildClarificationQuestionForPrompt(
+    prompt: String,
+    agentMessageId: String
+): AiClarificationRequest? {
+    val trimmed = prompt.trim()
+    if (trimmed.isEmpty()) return null
+    val lower = trimmed.lowercase()
+
+    val (question, options) = when {
+        lower.contains("테스트") || lower.contains("점검") || lower.contains("실측") -> {
+            "어떤 범위로 동작 및 테스트를 진행할까요?" to listOf(
+                "전체 빌드 + 실기기 UI 동작 검증 (권장)",
+                "변경된 핵심 화면만 빠르게 검증",
+                "단위 테스트 및 코드 정적 점검 위주"
+            )
+        }
+        lower.contains("폴더") || lower.contains("프로젝트") || lower.contains("구조") -> {
+            "프로젝트 폴더 작업을 어떤 방식으로 적용할까요?" to listOf(
+                "현재 활성 프로젝트 기준 구조 정리 및 동기화 (권장)",
+                "새 하위 모듈·폴더 구성안 먼저 생성",
+                "기존 파일 유지하며 설정만 업데이트"
+            )
+        }
+        lower.contains("할 일") || lower.contains("정리") || lower.contains("요약") -> {
+            "원하시는 정리 스타일을 선택해 주세요" to listOf(
+                "핵심 결론 + 바로 실행할 액션 3가지 (권장)",
+                "단계별 체크리스트 형태로 상세 정리",
+                "한 줄 요약 위주로 간결하게 브리핑"
+            )
+        }
+        else -> {
+            "요청하신 작업을 어떤 방향으로 진행할까요?" to listOf(
+                "즉시 코드 반영 후 실측 검증까지 완료 (권장)",
+                "핵심 변경안 먼저 요약 브리핑",
+                "최소 수정으로 안전하게 적용"
+            )
+        }
+    }
+
+    return AiClarificationRequest(
+        id = "clarify-${System.currentTimeMillis()}",
+        agentMessageId = agentMessageId,
+        originalPrompt = trimmed,
+        questionTitle = question,
+        options = options
+    )
+}
+
+@Composable
+private fun AiClarificationBottomCard(
+    request: AiClarificationRequest,
+    reducedMotion: Boolean,
+    onSkip: () -> Unit,
+    onSubmit: (String) -> Unit
+) {
+    var selectedIdx by remember(request.id) { mutableIntStateOf(0) }
+    val cardBg = Color(0xFF13131B)
+    val optionBg = Color(0xFF1B1B25)
+    val selectedOptionBg = Color(0xFF1B3631)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .border(
+                width = 1.dp,
+                color = AntigravityPalette.CalmSageAccent.copy(alpha = 0.26f),
+                shape = RoundedCornerShape(22.dp)
+            ),
+        shape = RoundedCornerShape(22.dp),
+        color = cardBg
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 15.dp, vertical = 13.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp)
+        ) {
+            // Header: Marquee shimmer badge + Question title
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF1D3530))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    MarqueeLightSweepProcessText(
+                        text = "AI 확인 질문",
+                        isActive = true,
+                        reducedMotion = reducedMotion
+                    )
+                }
+                Text(
+                    text = request.questionTitle,
+                    style = AntigravityTypography.PillLabel.copy(
+                        color = AntigravityPalette.WarmIvoryInk,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            // Selectable Options List with smooth tactile press interaction
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                request.options.forEachIndexed { idx, optionText ->
+                    val isSelected = idx == selectedIdx
+                    val optInteraction = remember(idx) { MutableInteractionSource() }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 40.dp)
+                            .tactilePressScale(optInteraction, reducedMotion)
+                            .clip(RoundedCornerShape(13.dp))
+                            .background(if (isSelected) selectedOptionBg else optionBg)
+                            .clickable(
+                                interactionSource = optInteraction,
+                                indication = null,
+                                role = Role.RadioButton,
+                                onClick = { selectedIdx = idx }
+                            )
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isSelected) AntigravityPalette.CalmSageAccent
+                                        else Color(0xFF2B2B38)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = AntigravityIcons.CheckMark,
+                                        contentDescription = null,
+                                        tint = AntigravityPalette.DeepForestInk,
+                                        modifier = Modifier.size(10.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(9.dp))
+                            Text(
+                                text = optionText,
+                                style = AntigravityTypography.SecondaryBody.copy(
+                                    color = if (isSelected) AntigravityPalette.WarmIvoryInk else AntigravityPalette.WarmIvoryInk.copy(alpha = 0.78f),
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                                ),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Two Choice Action Buttons: [건너뛰기] and [제출]
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val skipInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 42.dp)
+                        .tactilePressScale(skipInteraction, reducedMotion)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(Color(0xFF20202B))
+                        .clickable(
+                            interactionSource = skipInteraction,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = onSkip
+                        )
+                        .semantics {
+                            contentDescription = "건너뛰기"
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "건너뛰기",
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = AntigravityPalette.WarmIvoryInk.copy(alpha = 0.82f),
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    )
+                }
+
+                val submitInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .defaultMinSize(minHeight = 42.dp)
+                        .tactilePressScale(submitInteraction, reducedMotion)
+                        .clip(RoundedCornerShape(13.dp))
+                        .background(AntigravityPalette.CalmSageAccent)
+                        .clickable(
+                            interactionSource = submitInteraction,
+                            indication = null,
+                            role = Role.Button,
+                            onClick = {
+                                val chosen = request.options.getOrElse(selectedIdx) { request.options.first() }
+                                onSubmit(chosen)
+                            }
+                        )
+                        .semantics {
+                            contentDescription = "제출"
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "제출",
+                        style = AntigravityTypography.PillLabel.copy(
+                            color = AntigravityPalette.DeepForestInk,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
                 }
             }
         }
